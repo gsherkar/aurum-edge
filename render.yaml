@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: aurum-edge-api
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: APP_NAME
+        value: Aurum Edge
+      - key: DATABASE_URL
+        fromDatabase:
+          name: aurum-edge-db
+          property: connectionString
+      - key: PYTHON_VERSION
+        value: 3.12.9
+
+  - type: workflow
+    name: aurum-edge-workflows
+    runtime: python
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: render-workflows app.workflow:workflow
+    envVars:
+      - key: APP_NAME
+        value: Aurum Edge
+      - key: DATABASE_URL
+        fromDatabase:
+          name: aurum-edge-db
+          property: connectionString
+      - key: PYTHON_VERSION
+        value: 3.12.9
+
+databases:
+  - name: aurum-edge-db
+    databaseName: aurum_edge
+    user: aurum_edge
+    region: oregon
+    plan: free
