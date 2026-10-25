@@ -11,15 +11,40 @@ const LIQUIDITY: Record<Signal['liquidity_status'], string> = { passed: 'Passed'
 
 function Details({ s, onClose }: { s: Signal; onClose: () => void }) {
   const btn = useRef<HTMLButtonElement>(null);
+  const dialog = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     btn.current?.focus();
-    const k = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', k);
-    return () => window.removeEventListener('keydown', k);
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab' || !dialog.current) return;
+      const focusable = [...dialog.current.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )];
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialog.current.focus();
+      } else if (event.shiftKey && document.activeElement === focusable[0]) {
+        event.preventDefault();
+        focusable[focusable.length - 1].focus();
+      } else if (!event.shiftKey && document.activeElement === focusable[focusable.length - 1]) {
+        event.preventDefault();
+        focusable[0].focus();
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      previouslyFocused?.focus();
+    };
   }, [onClose]);
   return (
     <div className="modal-bg" onClick={onClose}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label={`Alert details for ${s.symbol}`} onClick={(e) => e.stopPropagation()}>
+      <div className="modal" ref={dialog} role="dialog" aria-modal="true" aria-label={`Alert details for ${s.symbol}`}
+        tabIndex={-1} onClick={(e) => e.stopPropagation()}>
         <h3>{s.symbol} – why this was flagged</h3>
         <p>{s.explanation || 'The backend did not provide an explanation for this alert.'}</p>
         <dl>
@@ -65,7 +90,7 @@ function LocalRules() {
     const validSymbol = symbols.find((item) => item.toLowerCase() === symbol.trim().toLowerCase());
     const numericTarget = Number(target);
     if (!validSymbol) {
-      setFormError('Choose a contract symbol returned by the backend.');
+      setFormError('Choose an available contract symbol from the current dataset.');
       return;
     }
     if (!Number.isFinite(numericTarget) || numericTarget <= 0) {

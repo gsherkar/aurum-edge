@@ -9,6 +9,7 @@ export interface AppCtx {
   reportMode: (section: string, mode: DataMode | null) => void;
   dataMode: BackendDataMode;
   setDataMode: (mode: BackendDataMode) => void;
+  sampleMode: boolean;
 }
 export const AppContext = createContext<AppCtx | null>(null);
 export function useApp(): AppCtx {

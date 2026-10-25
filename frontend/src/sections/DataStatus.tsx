@@ -88,7 +88,7 @@ function CreateDemoData() {
 }
 
 export default function DataStatus() {
-  const { client, refreshKey, dataMode } = useApp();
+  const { client, refreshKey, dataMode, sampleMode } = useApp();
   const res = useResource(() => client.dataStatus(), [client, refreshKey]);
   useReportMode('data', res.data?.data_mode);
   return (
@@ -96,6 +96,7 @@ export default function DataStatus() {
       <Async res={res}>{(data) => (
         <>
           {dataMode === 'synthetic' && <p className="note warn">Synthetic backend data selected; values are demonstration data, not live MCX market data.</p>}
+          {sampleMode && <p className="note warn">Sample preview data is bundled with the frontend for UI testing. No files are sent or processed in this mode.</p>}
           {data.data_mode === 'unknown' && <p className="note">No observations are available for the selected dataset.</p>}
           <div className="stats">
             <Stat label="Latest data date" value={fmtDate(data.latest_data_date)} />
@@ -106,8 +107,10 @@ export default function DataStatus() {
             <Stat label="Valid records" value={fmtInt(data.records_imported)} />
           </div>
           {data.warnings.length > 0 && <ul className="warn-list">{data.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
-          {data.upload_supported ? <Upload /> : <p className="note">File import is not enabled on this backend.</p>}
-          <CreateDemoData />
+          {sampleMode
+            ? <p className="note">File upload and dataset creation require the backend and are disabled in this preview.</p>
+            : data.upload_supported ? <Upload /> : <p className="note">File import is not enabled on this backend.</p>}
+          {!sampleMode && <CreateDemoData />}
           <h3>Recent imports</h3>
           {data.imports.length === 0 ? <p className="empty">No file or synthetic-data imports have been recorded.</p> : (
             <div className="table-wrap"><table>

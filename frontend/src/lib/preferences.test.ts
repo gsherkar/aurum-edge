@@ -19,4 +19,17 @@ describe('browser preferences', () => {
     window.localStorage.setItem('aurum-edge.watchlist.v1', '{');
     expect(loadWatchlist()).toMatchObject({ symbols: [], error: expect.any(String) });
   });
+
+  it('ignores malformed stored watchlist and alert-rule entries without discarding valid entries', () => {
+    window.localStorage.setItem('aurum-edge.watchlist.v1', JSON.stringify(['GOLDM', 'invalid symbol', 7]));
+    window.localStorage.setItem('aurum-edge.local-alert-rules.v1', JSON.stringify([
+      { id: 'rule-1', symbol: 'GOLDM', direction: 'above', target: 7000 },
+      { id: 'bad-rule', symbol: 'GOLDM', direction: 'sideways', target: -1 },
+    ]));
+    expect(loadWatchlist()).toEqual({ symbols: ['GOLDM'], error: null });
+    expect(loadLocalAlertRules()).toEqual({
+      rules: [{ id: 'rule-1', symbol: 'GOLDM', direction: 'above', target: 7000 }],
+      error: null,
+    });
+  });
 });

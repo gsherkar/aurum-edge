@@ -23,7 +23,7 @@
 }
 
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; scroll-padding-top: 112px; }
+html { overflow-x: clip; scroll-behavior: smooth; scroll-padding-top: 112px; }
 body { min-width: 320px; margin: 0; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.55; }
 button, input, select { font: inherit; }
 button, a, input, select { -webkit-tap-highlight-color: transparent; }
@@ -39,11 +39,13 @@ a { color: var(--gold); }
 nav { display: flex; flex: 1; flex-wrap: nowrap; gap: 3px; overflow-x: auto; scrollbar-width: thin; }
 nav a { flex: 0 0 auto; padding: 6px 9px; border: 1px solid transparent; border-radius: 7px; color: var(--muted); font-size: 12px; text-decoration: none; }
 nav a:hover, nav a:focus-visible { border-color: var(--line); background: var(--surface-raised); color: var(--text); }
+nav a[aria-current="location"] { border-color: var(--line); background: var(--surface-raised); color: var(--gold); }
 .connection-status { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .connection-status::before, .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); content: ""; }
 .connection-status.connected::before { background: var(--green); box-shadow: 0 0 10px rgb(85 198 154 / 35%); }
 .connection-status.offline::before { background: var(--red); }
 .connection-status.checking::before { background: var(--amber); }
+.connection-status.sample::before { background: var(--blue); }
 .mode-select { flex: 0 0 auto; }
 .mode-select select { min-height: 32px; padding: 4px 8px; }
 
@@ -129,6 +131,7 @@ label { display: inline-flex; flex-direction: column; gap: 4px; color: var(--mut
 .glossary dd { margin: 2px 0 0; color: var(--muted); }
 .upload, .search-form, .rule-form { display: flex; flex-wrap: wrap; align-items: end; gap: 9px; }
 .upload { padding-top: 10px; }
+.upload > select { flex: 1 1 100%; min-width: 0; max-width: 100%; }
 .watchlist-panel, .local-rules { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
 .subsection-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
 .subsection-head .note { margin: 3px 0 0; }
