@@ -7,6 +7,7 @@ The browser client in `src/api/client.ts` maps the registered backend payloads i
 - All endpoints are relative to the backend origin (or `VITE_API_BASE_URL`).
 - Local Vite development proxies `/api` and `/health` to `VITE_DEV_PROXY_TARGET`, which defaults to `http://localhost:8000`.
 - The backend's `CORS_ALLOWED_ORIGINS` setting is a comma-separated exact-origin allowlist. Local defaults include Vite's `localhost:5173` and `127.0.0.1:5173`; for a hosted frontend, configure its exact Render origin on the backend. Wildcard origins are not used.
+- With `VITE_DATA_SOURCE=sample` (the local default), the client uses a bundled, deterministic UI fixture instead of making network requests. These illustrative values are not official market prices or verified contract specifications, and all write operations are unavailable. Set `VITE_DATA_SOURCE=api` to use the routes below.
 - `data_mode` is `historical_file` or `synthetic`. It is passed to contracts, observations, alerts, and backtest requests where supported. The summary contains datasets for each mode.
 - Uploaded files and backend-generated synthetic examples are the supported data sources. This backend does not fetch real-time MCX prices; synthetic values are labeled as such.
 

@@ -5,7 +5,7 @@ import { useResource } from '../hooks/useResource';
 import { fmtDateTime } from '../lib/format';
 
 export default function Workflow() {
-  const { client, refreshKey, refreshAll } = useApp();
+  const { client, refreshKey, refreshAll, sampleMode } = useApp();
   const imports = useResource(() => client.imports(), [client, refreshKey]);
   const [importId, setImportId] = useState('');
   const [triggering, setTriggering] = useState(false);
@@ -29,10 +29,12 @@ export default function Workflow() {
   }
   return (
     <Card id="workflow" title="Render workflow submission">
-      <p className="note">Submit a specific import to the configured Render task. This frontend can report that the task was accepted, but the available backend API does not provide task status or completion polling.</p>
+      <p className="note">{sampleMode
+        ? 'Workflow submission is disabled in sample preview; the sample import is not a backend import.'
+        : 'Submit a specific import to the configured Render task. This frontend can report that the task was accepted, but the available backend API does not provide task status or completion polling.'}</p>
       {message && <p className={message.kind === 'error' ? 'error' : 'note ok'} role="status">{message.text}</p>}
-      <Async res={imports}>{(items) => {
-        return (
+      {sampleMode ? <p className="empty">No backend imports are available in sample preview.</p> : (
+        <Async res={imports}>{(items) => (
           <div className="upload">
             <label htmlFor="workflow-import">Import to process</label>
             <select id="workflow-import" value={importId} onChange={(event) => setImportId(event.target.value)}>
@@ -48,8 +50,8 @@ export default function Workflow() {
             </button>
             {items.length === 0 && <p className="empty">There are no available imports to submit.</p>}
           </div>
-        );
-      }}</Async>
+        )}</Async>
+      )}
     </Card>
   );
 }

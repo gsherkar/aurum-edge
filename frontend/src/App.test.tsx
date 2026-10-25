@@ -62,7 +62,11 @@ function backend(options: { singleObservation?: boolean } = {}) {
 }
 
 describe('dashboard interactions against backend contract', () => {
-  beforeEach(() => { vi.clearAllMocks(); window.localStorage.clear(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    window.history.replaceState(null, '', '/');
+  });
 
   it('explains a local 502 as a backend proxy connectivity problem', async () => {
     const client = createClient({
@@ -71,6 +75,31 @@ describe('dashboard interactions against backend contract', () => {
     render(<App client={client} />);
     expect(await screen.findByText('Local API proxy returned 502')).toBeInTheDocument();
     expect(screen.getByText(/Start the backend on that address or set/)).toBeInTheDocument();
+  });
+
+  it('starts in a backend-independent static sample preview and disables backend operations', async () => {
+    render(<App />);
+    expect(await screen.findByText('STATIC SAMPLE PREVIEW')).toBeInTheDocument();
+    expect(screen.getByText('Sample preview')).toBeInTheDocument();
+    expect((await screen.findAllByText('Static frontend sample (not market data)')).length).toBeGreaterThan(0);
+    expect(await screen.findByRole('button', { name: 'Explain alert for GOLDM' })).toBeInTheDocument();
+    expect(screen.getByText(/File upload and dataset creation require the backend/)).toBeInTheDocument();
+    expect(screen.getByText('No backend imports are available in sample preview.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Submit workflow' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/MCX data file/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Backend unavailable')).not.toBeInTheDocument();
+  });
+
+  it('opens alert details accessibly and restores focus on Escape', async () => {
+    render(<App />);
+    const explain = await screen.findByRole('button', { name: 'Explain alert for GOLDM' });
+    explain.focus();
+    fireEvent.click(explain);
+    expect(await screen.findByRole('dialog', { name: 'Alert details for GOLDM' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(explain).toHaveFocus();
   });
 
   it('loads backend summary/observations and does not call the former proposed endpoints', async () => {
@@ -108,7 +137,7 @@ describe('dashboard interactions against backend contract', () => {
 
   it('searches returned market symbols and persists additions to the browser watchlist', async () => {
     const { client } = backend();
-    render(<App client={client} />);
+    const view = render(<App client={client} />);
     const search = await screen.findByLabelText('Search available contracts');
     fireEvent.change(search, { target: { value: 'NOT-REAL' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
@@ -117,15 +146,54 @@ describe('dashboard interactions against backend contract', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
     expect(await screen.findByRole('button', { name: 'Remove GOLDM from watchlist' })).toBeInTheDocument();
     expect(window.localStorage.getItem('aurum-edge.watchlist.v1')).toContain('GOLDM');
+    view.unmount();
+    render(<App client={client} />);
+    expect(await screen.findByRole('button', { name: 'Remove GOLDM from watchlist' })).toBeInTheDocument();
+  });
+
+  it('filters contracts by instrument, expiry, and delivery location', async () => {
+    render(<App />);
+    const contracts = screen.getByRole('region', { name: 'Contract details' });
+    const search = await within(contracts).findByLabelText('Search contracts');
+    expect(within(contracts).getByText('GOLDM')).toBeInTheDocument();
+    fireEvent.change(search, { target: { value: 'GOLDPETAL' } });
+    expect(within(contracts).getByText('GOLDPETAL')).toBeInTheDocument();
+    expect(within(contracts).queryByText('GOLDM')).not.toBeInTheDocument();
+    fireEvent.change(search, { target: { value: 'no-match' } });
+    expect(within(contracts).getByText(/No contracts match/)).toBeInTheDocument();
+    fireEvent.change(search, { target: { value: '' } });
+    expect(within(contracts).getByText('GOLDM')).toBeInTheDocument();
+  });
+
+  it('keeps every navigation link mapped to a real section and updates the active location', async () => {
+    render(<App />);
+    const nav = screen.getByRole('navigation', { name: 'Sections' });
+    const links = within(nav).getAllByRole('link');
+    expect(links).toHaveLength(9);
+    for (const link of links) {
+      const target = link.getAttribute('href');
+      expect(target).toMatch(/^#/);
+      expect(document.querySelector(target as string)).not.toBeNull();
+    }
+    fireEvent.click(within(nav).getByRole('link', { name: 'Prices' }));
+    await waitFor(() => expect(within(nav).getByRole('link', { name: 'Prices' })).toHaveAttribute('aria-current', 'location'));
   });
 
   it('creates, edits, and deletes a clearly browser-only price rule', async () => {
     const { client } = backend();
-    render(<App client={client} />);
+    const view = render(<App client={client} />);
     await screen.findByRole('option', { name: 'GOLDM' });
     fireEvent.change(screen.getByLabelText('Contract'), { target: { value: 'GOLDM' } });
+    const ruleForm = screen.getByLabelText('Contract').closest('form');
+    expect(ruleForm).not.toBeNull();
+    fireEvent.change(screen.getByLabelText('Target price (₹/g)'), { target: { value: '0' } });
+    fireEvent.submit(ruleForm as HTMLFormElement);
+    expect(await screen.findByText('Enter a target price greater than zero.')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Target price (₹/g)'), { target: { value: '7000' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save rule' }));
+    expect(await screen.findByRole('button', { name: 'Delete GOLDM price rule' })).toBeInTheDocument();
+    view.unmount();
+    render(<App client={client} />);
     expect(await screen.findByRole('button', { name: 'Delete GOLDM price rule' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(screen.getByLabelText('Target price (₹/g)'), { target: { value: '7500' } });
@@ -133,6 +201,20 @@ describe('dashboard interactions against backend contract', () => {
     expect(screen.getByText((_, element) => element?.textContent === 'GOLDM above ₹7,500/g')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Delete GOLDM price rule' }));
     expect(await screen.findByText('No local rules saved.')).toBeInTheDocument();
+  });
+
+  it('validates backtest date bounds and filters the sample diagnostic period', async () => {
+    render(<App />);
+    const start = await screen.findByLabelText('Start date');
+    const end = screen.getByLabelText('End date');
+    fireEvent.change(start, { target: { value: '2025-01-14' } });
+    fireEvent.change(end, { target: { value: '2025-01-13' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply period' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Start date must be on or before the end date.');
+    fireEvent.change(start, { target: { value: '2025-01-13' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply period' }));
+    const rows = screen.getAllByRole('row').filter((row) => /13 Jan 2025|14 Jan 2025/.test(row.textContent ?? ''));
+    expect(rows.length).toBeGreaterThanOrEqual(2);
   });
 
   it('submits an existing import and clearly does not claim completion or poll unsupported endpoints', async () => {

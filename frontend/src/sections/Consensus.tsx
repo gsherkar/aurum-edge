@@ -25,8 +25,8 @@ function Body({ c }: { c: ConsensusResponse }) {
       <LazyChart data={data} layout={layout} label="Normalized contract prices compared with the consensus price" />
       <div className="table-wrap"><table>
         <thead><tr><th>Contract</th><th>Normalized (₹/g)</th><th><Term>Residual</Term> (₹/g)</th><th>Residual %</th><th><Term>Z-score</Term></th><th>Weight</th></tr></thead>
-        <tbody>{rows.map((r) => (
-          <tr key={r.symbol}><td>{r.symbol}</td><td>{fmtNum(r.normalized_price)}</td><td>{fmtSigned(r.residual_abs)}</td>
+        <tbody>{rows.map((r, index) => (
+          <tr key={`${r.symbol}-${index}`}><td>{r.symbol}</td><td>{fmtNum(r.normalized_price)}</td><td>{fmtSigned(r.residual_abs)}</td>
             <td>{r.residual_pct == null ? fmtPct(null) : `${fmtSigned(r.residual_pct)}%`}</td><td>{fmtSigned(r.zscore)}</td><td>{fmtNum(r.weight, 3)}</td></tr>))}</tbody>
       </table></div>
     </>
