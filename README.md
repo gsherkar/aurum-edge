@@ -93,7 +93,7 @@ GET endpoints read persisted normalized observations and analysis results; norma
 
 ### FastAPI and PostgreSQL
 
-Create a Render Blueprint from the repository's `feature/quant-engine` branch and review the proposed resources before applying [render.yaml](./render.yaml). It defines the web API, PostgreSQL database, and Workflow service. Check current Render plan availability/pricing before provisioning; the API and database currently use the free plan where available, while Workflow task runs are billed separately. Set production configuration/secrets in the Render Dashboard, not in Git.
+Create a Render Blueprint from the branch you intend to deploy and review the proposed resources before applying [render.yaml](./render.yaml). It defines the web API, static frontend, PostgreSQL database, and Workflow service. The frontend build needs `VITE_API_BASE_URL` set to the API's public URL. After Render assigns the frontend URL, set the API's `CORS_ALLOWED_ORIGINS` to that exact origin (without a trailing slash); the checked-in default only permits local Vite origins. Check current Render plan availability/pricing before provisioning; the API and database currently use the free plan where available, while Workflow task runs are billed separately. Set production configuration/secrets in the Render Dashboard, not in Git.
 
 ### Render Workflows
 

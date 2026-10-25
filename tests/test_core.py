@@ -208,6 +208,32 @@ def test_api_contract_paths_match_registered_openapi_routes():
     assert documented_routes == registered_routes
 
 
+def test_cors_allows_frontend_origins_without_wildcard():
+    client = TestClient(app)
+
+    response = client.options(
+        "/api/v1/data/demo",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert "access-control-allow-credentials" not in response.headers
+
+    rejected = client.options(
+        "/api/v1/data/demo",
+        headers={
+            "Origin": "https://untrusted.example",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert rejected.status_code == 400
+    assert "access-control-allow-origin" not in rejected.headers
+
+
 def test_api_imports_historical_file_and_keeps_demo_separate(monkeypatch):
     from types import SimpleNamespace
 

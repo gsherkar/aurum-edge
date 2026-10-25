@@ -8,6 +8,7 @@ from datetime import date
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from render import Render
 from sqlalchemy import exists, text
 from sqlalchemy.exc import IntegrityError
@@ -27,6 +28,17 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(title=settings.app_name, version="0.2.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        origin.strip()
+        for origin in settings.cors_allowed_origins.split(",")
+        if origin.strip()
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Accept", "Content-Type"],
+)
 
 
 def _start_render_workflow(import_id: str) -> str:
