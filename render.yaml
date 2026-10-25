@@ -1,0 +1,15 @@
+# Render Blueprint for the static frontend only. The backend / workflow service is defined by the backend developer.
+services:
+  - type: web
+    name: aurum-edge-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false   # set in Render dashboard to the backend's public URL
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
