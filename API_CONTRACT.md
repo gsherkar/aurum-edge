@@ -185,6 +185,11 @@ serialization. Unless otherwise noted, validation errors use FastAPI's
 - **Request:** No body or query parameters.
 - **202 response:** `status: "submitted"`, `import_id`, `task_run_id`, and
   `task_slug`.
+- **Submission behavior:** The SDK receives the positional argument list
+  `[import_id]` and the idempotency key `aurum-edge-{import_id}`. Repeating
+  the same submission with that key within 24 hours returns the original task
+  run instead of creating a second one; use the Render Dashboard to
+  intentionally start a replacement run during that window.
 - **Errors:** HTTP 404 when the import batch does not exist; HTTP 503 when
   `RENDER_API_KEY` or `RENDER_WORKFLOW_TASK_SLUG` is missing. Other Render SDK
   failures are not translated by this handler.
