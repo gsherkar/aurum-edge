@@ -64,6 +64,8 @@ function backend(options: { singleObservation?: boolean } = {}) {
 describe('dashboard interactions against backend contract', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     window.localStorage.clear();
     window.history.replaceState(null, '', '/');
   });
@@ -111,6 +113,52 @@ describe('dashboard interactions against backend contract', () => {
     expect(calls.map((call) => call.path)).toContain('/api/v1/market/observations');
     expect(calls.every(({ method }) => method === 'GET')).toBe(true);
     expect(calls.some(({ path }) => ['/api/v1/market/overview', '/api/v1/market/history', '/api/v1/signals', '/api/v1/workflows/status'].includes(path))).toBe(false);
+  });
+
+  it('defaults API mode to the populated synthetic dataset without creating another batch', async () => {
+    const symbols = ['DEMO_GOLD_100G', 'DEMO_GOLD_10G', 'DEMO_GOLD_8G', 'DEMO_GOLD_1G'];
+    const urls: URL[] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'http://localhost');
+      urls.push(url);
+      if (url.pathname === '/health') return json({ status: 'ok', app: 'Aurum', database: 'connected' });
+      if (url.pathname === '/api/v1/market/summary') return json({ data_sets: [dataset('synthetic')] });
+      if (url.pathname === '/api/v1/market/observations') return json(symbols.map((symbol) => ({
+        symbol, expiry_date: '2026-12-10', source_name: 'synthetic-demo-provider',
+        data_date: '2026-10-26', data_mode: 'synthetic', close: 7000, settlement: 7000,
+        normalized_close: 7000,
+      })));
+      if (url.pathname === '/api/v1/contracts') return json(symbols.map((symbol, index) => ({
+        symbol, expiry_date: '2026-12-10', contract_quantity: [100, 10, 8, 1][index],
+        quotation_unit: `${[100, 10, 8, 1][index]}g`, quotation_basis: 'illustrative synthetic quote',
+        verification_status: 'demo-only',
+      })));
+      if (url.pathname === '/api/v1/alerts') return json([]);
+      if (url.pathname === '/api/v1/analysis/backtest') return json({
+        method: 'walk-forward residual z-score', start_date: null, end_date: null, days_evaluated: 0,
+        candidate_count: 0, trading_performance_claimed: false, daily_results: [],
+        liquidity_weighting_method: 'raw_volume', liquidity_weighting_note: 'Experimental.',
+      });
+      if (url.pathname === '/api/v1/data/imports') return json([{
+        import_id: 'synthetic-demo-v1', file_name: 'generated-synthetic-demo',
+        source_name: 'synthetic-demo-provider', data_mode: 'synthetic', status: 'completed',
+        summary: { valid_rows: 240 }, error: null, last_updated: '2026-10-26T20:07:17Z',
+      }]);
+      return new Response('unexpected route', { status: 404 });
+    });
+    vi.stubEnv('VITE_DATA_SOURCE', 'api');
+    vi.stubGlobal('fetch', fetchImpl);
+
+    render(<App />);
+
+    expect(await screen.findByText('SYNTHETIC DATA')).toBeInTheDocument();
+    const contracts = screen.getByRole('region', { name: 'Contract details' });
+    expect(await within(contracts).findByText('DEMO_GOLD_100G')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText(/Checking or preparing the illustrative synthetic dataset/)).not.toBeInTheDocument());
+    expect(screen.getByLabelText('Dataset')).toHaveValue('synthetic');
+    expect(urls.some((url) => url.pathname === '/api/v1/data/demo')).toBe(false);
+    expect(urls.filter((url) => url.searchParams.has('data_mode'))
+      .every((url) => url.searchParams.get('data_mode') === 'synthetic')).toBe(true);
   });
 
   it('allows a stale saved watchlist symbol to be removed', async () => {

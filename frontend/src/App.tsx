@@ -20,15 +20,18 @@ const NAV = [['overview', 'Overview'], ['prices', 'Prices'], ['consensus', 'Cons
 
 export default function App({ client: injected }: { client?: ApiClient }) {
   const sampleMode = !injected && import.meta.env.VITE_DATA_SOURCE !== 'api';
-  const [dataMode, setDataMode] = useState<'historical_file' | 'synthetic'>(sampleMode ? 'synthetic' : 'historical_file');
+  const [dataMode, setDataMode] = useState<'historical_file' | 'synthetic'>(sampleMode || !injected ? 'synthetic' : 'historical_file');
   const [activeSection, setActiveSection] = useState(() => window.location.hash.slice(1) || 'overview');
   const [refreshKey, setRefreshKey] = useState(0);
   const [modes, setModes] = useState<Record<string, DataMode>>({});
+  const [demoInitializationPending, setDemoInitializationPending] = useState(!sampleMode && !injected);
+  const [demoInitializationError, setDemoInitializationError] = useState<string | null>(null);
   const client = useMemo(() => injected ?? createClient({
     baseUrl: defaultBaseUrl,
     dataMode,
     fetchImpl: sampleMode ? createSampleFetch() : undefined,
   }), [injected, dataMode, sampleMode]);
+  const demoClient = useMemo(() => createClient({ baseUrl: defaultBaseUrl, dataMode: 'synthetic' }), []);
   const refreshAll = useCallback(() => setRefreshKey((k) => k + 1), []);
   const reportMode = useCallback((s: string, m: DataMode | null) => setModes((prev) => {
     if ((prev[s] ?? null) === m) return prev;
@@ -48,6 +51,23 @@ export default function App({ client: injected }: { client?: ApiClient }) {
     window.addEventListener('hashchange', updateActiveSection);
     return () => window.removeEventListener('hashchange', updateActiveSection);
   }, []);
+
+  useEffect(() => {
+    if (sampleMode || injected) return;
+    let active = true;
+    setDemoInitializationPending(true);
+    demoClient.ensureDemoData().then(() => {
+      if (!active) return;
+      setDemoInitializationPending(false);
+      setDemoInitializationError(null);
+      refreshAll();
+    }).catch((error: unknown) => {
+      if (!active) return;
+      setDemoInitializationPending(false);
+      setDemoInitializationError(error instanceof Error ? error.message : 'Synthetic demo initialization failed.');
+    });
+    return () => { active = false; };
+  }, [demoClient, injected, refreshAll, sampleMode]);
 
   return (
     <AppContext.Provider value={{ client, refreshKey, refreshAll, reportMode, dataMode, setDataMode, sampleMode }}>
@@ -69,6 +89,10 @@ export default function App({ client: injected }: { client?: ApiClient }) {
       <a className="skip-link" href="#overview">Skip to dashboard</a>
       {sampleMode && <div className="banner demo" role="status"><strong>STATIC SAMPLE PREVIEW</strong> — illustrative fixture values only; not live, current, or backend market data. Backend actions are disabled.</div>}
       {hasDemo && !mixed && <div className="banner demo" role="status"><strong>SYNTHETIC DATA</strong> – backend-generated demonstration values only; they do not represent real MCX market conditions.</div>}
+      {demoInitializationPending && <div className="banner demo" role="status">Checking or preparing the illustrative synthetic dataset. Analysis will appear after the backend pipeline completes.</div>}
+      {demoInitializationError && <div className="banner bad" role="alert">
+        <strong>Synthetic demo is not ready.</strong> {demoInitializationError} <a href="#data">Open Data status to retry.</a>
+      </div>}
       {mixed && <div className="banner bad" role="alert"><strong>Mixed data modes detected.</strong> Some sections do not match the selected backend dataset. Do not compare them until refreshed.</div>}
       {down && (
         <div className="banner bad" role="alert">
@@ -90,7 +114,7 @@ export default function App({ client: injected }: { client?: ApiClient }) {
         <ErrorBoundary name="Alerts"><Alerts /></ErrorBoundary>
         <ErrorBoundary name="Contracts"><Contracts /></ErrorBoundary>
         <ErrorBoundary name="Backtest"><Backtest /></ErrorBoundary>
-        <ErrorBoundary name="Data status"><DataStatus /></ErrorBoundary>
+        <ErrorBoundary name="Data status"><DataStatus onDemoReady={() => setDemoInitializationError(null)} /></ErrorBoundary>
         <ErrorBoundary name="Workflow"><Workflow /></ErrorBoundary>
         <Glossary />
       </main>

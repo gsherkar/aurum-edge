@@ -2,24 +2,33 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from render import Render
-from sqlalchemy import exists, text
+from sqlalchemy import exists, func, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import get_db, init_db
 from .engine import build_walk_forward_backtest, calculate_consensus
-from .models import ContractSpec, ImportBatch, MarketAlert, MarketObservation
+from .models import AnalysisResult, ContractSpec, ImportBatch, MarketAlert, MarketObservation, utc_now
+from .providers import DemoDataProvider
 from .schemas import ContractSpecCreate, ContractSpecRead, MarketObservationRead
-from .services.pipeline import run_local_pipeline
+from .services.pipeline import record_import_failure, run_local_pipeline
+
+logger = logging.getLogger(__name__)
+DEMO_IMPORT_ID = "synthetic-demo-v1"
+DEMO_RECORDS_PER_CONTRACT = 60
+DEMO_JOB_STALE_AFTER = timedelta(minutes=10)
+DEMO_RETRY_COOLDOWN = timedelta(minutes=1)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
@@ -191,35 +200,186 @@ async def import_historical_file(
     }
 
 
-@app.post("/api/v1/data/demo")
-def import_demo_data(db: Session = Depends(get_db)) -> dict[str, Any]:
-    import_id = f"synthetic-demo-{date.today().isoformat()}"
+def _has_complete_demo_dataset(db: Session, batch: ImportBatch) -> bool:
+    expected_contracts = {
+        symbol: (quantity, unit, basis)
+        for symbol, quantity, unit, basis in DemoDataProvider.contracts
+    }
+    specs = {
+        spec.symbol: spec
+        for spec in db.query(ContractSpec).filter(
+            ContractSpec.data_mode == "synthetic",
+            ContractSpec.symbol.in_(expected_contracts),
+            ContractSpec.verification_status == "demo-only",
+            ContractSpec.effective_start == date(2000, 1, 1),
+            ContractSpec.expiry_date.is_(None),
+        )
+    }
+    for symbol, (quantity, unit, basis) in expected_contracts.items():
+        spec = specs.get(symbol)
+        if (
+            spec is None
+            or spec.contract_quantity != quantity
+            or spec.quotation_unit != unit
+            or spec.quotation_basis != basis
+            or spec.conversion_factor != 1.0
+        ):
+            return False
+
+    observations = db.query(
+        MarketObservation.symbol,
+        func.count(MarketObservation.id),
+        func.count(MarketObservation.normalized_close),
+    ).filter(
+        MarketObservation.import_id == batch.id,
+        MarketObservation.data_mode == "synthetic",
+    ).group_by(MarketObservation.symbol).all()
+    counts = {symbol: (rows, normalized) for symbol, rows, normalized in observations}
+    if not all(
+        counts.get(symbol, (0, 0))[0] >= DEMO_RECORDS_PER_CONTRACT
+        and counts.get(symbol, (0, 0))[1] >= DEMO_RECORDS_PER_CONTRACT
+        for symbol in expected_contracts
+    ):
+        return False
+
+    analysis_days = db.query(func.count(AnalysisResult.id)).filter(
+        AnalysisResult.import_id == batch.id,
+        AnalysisResult.data_mode == "synthetic",
+    ).scalar()
+    return (analysis_days or 0) >= DEMO_RECORDS_PER_CONTRACT
+
+
+def _find_complete_demo_batch(db: Session) -> ImportBatch | None:
+    batches = db.query(ImportBatch).filter(
+        ImportBatch.source_name == "synthetic-demo-provider",
+        ImportBatch.data_mode == "synthetic",
+        ImportBatch.status == "completed",
+    ).order_by(ImportBatch.updated_at.desc()).all()
+    return next((batch for batch in batches if _has_complete_demo_dataset(db, batch)), None)
+
+
+def _create_demo_batch(db: Session) -> ImportBatch:
+    batch = db.get(ImportBatch, DEMO_IMPORT_ID)
+    if batch is not None:
+        return batch
+    batch = ImportBatch(
+        id=DEMO_IMPORT_ID,
+        file_name="generated-synthetic-demo",
+        source_name="synthetic-demo-provider",
+        data_mode="synthetic",
+        status="uploaded",
+    )
+    db.add(batch)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        batch = db.get(ImportBatch, DEMO_IMPORT_ID)
+        if batch is None:
+            raise
+    return batch
+
+
+def _claim_demo_generation(db: Session, import_id: str) -> bool:
+    now = utc_now()
+    stale_before = now - DEMO_JOB_STALE_AFTER
     batch = db.get(ImportBatch, import_id)
     if batch is None:
-        batch = ImportBatch(
-            id=import_id,
-            file_name="generated-synthetic-demo",
-            source_name="synthetic-demo-provider",
-            data_mode="synthetic",
-            status="uploaded",
-        )
-        db.add(batch)
-        db.commit()
-    if batch.status == "completed":
+        return False
+    if batch.status == "failed" and batch.updated_at > now - DEMO_RETRY_COOLDOWN:
+        return False
+
+    reclaimable = or_(
+        ImportBatch.status.in_(("uploaded", "failed")),
+        (
+            ImportBatch.status.in_(("ingested", "validated", "analysis_persisted"))
+            & (ImportBatch.updated_at <= stale_before)
+        ),
+        (ImportBatch.status == "processing") & (ImportBatch.updated_at <= stale_before),
+    )
+    claimed = db.query(ImportBatch).filter(
+        ImportBatch.id == import_id,
+        reclaimable,
+    ).update(
+        {"status": "processing", "error": None, "updated_at": now},
+        synchronize_session=False,
+    )
+    db.commit()
+    return claimed == 1
+
+
+def _run_demo_pipeline(import_id: str) -> None:
+    try:
+        run_local_pipeline(import_id)
+    except Exception as exc:
+        logger.exception("Synthetic demo generation failed for import %s", import_id)
+        try:
+            record_import_failure(import_id, exc)
+        except Exception:
+            logger.exception("Could not persist failure status for demo import %s", import_id)
+
+
+@app.post(
+    "/api/v1/data/demo",
+    responses={202: {"description": "Synthetic demo generation started or already in progress."}},
+)
+def import_demo_data(
+    background_tasks: BackgroundTasks,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    complete = _find_complete_demo_batch(db)
+    if complete is not None:
         return {
-            "import_id": import_id,
+            "import_id": complete.id,
             "status": "completed",
             "data_mode": "synthetic",
             "duplicate_upload": True,
-            "summary": json.loads(batch.summary or "{}"),
+            "summary": json.loads(complete.summary or "{}"),
         }
-    summary = run_local_pipeline(import_id)
+
+    batch = _create_demo_batch(db)
+    if batch.status == "completed" and not _has_complete_demo_dataset(db, batch):
+        db.query(ImportBatch).filter(
+            ImportBatch.id == DEMO_IMPORT_ID,
+            ImportBatch.status == "completed",
+        ).update(
+            {
+                "status": "failed",
+                "error": "The completed synthetic demo batch is incomplete; retrying its idempotent pipeline.",
+                "updated_at": utc_now() - DEMO_RETRY_COOLDOWN - timedelta(seconds=1),
+            },
+            synchronize_session=False,
+        )
+        db.commit()
+        db.refresh(batch)
+        if batch.status == "completed":
+            raise HTTPException(
+                status_code=409,
+                detail="The synthetic demo batch could not be claimed for repair; retry shortly.",
+            )
+
+    claimed = _claim_demo_generation(db, DEMO_IMPORT_ID)
+    if claimed:
+        background_tasks.add_task(_run_demo_pipeline, DEMO_IMPORT_ID)
+        response.status_code = 202
+        status = "processing"
+    elif batch.status == "failed" and batch.updated_at > utc_now() - DEMO_RETRY_COOLDOWN:
+        raise HTTPException(
+            status_code=429,
+            detail="Synthetic demo generation failed recently; wait before retrying.",
+        )
+    else:
+        db.refresh(batch)
+        response.status_code = 202
+        status = batch.status
+
     return {
-        "import_id": import_id,
-        "status": "completed",
+        "import_id": batch.id,
+        "status": status,
         "data_mode": "synthetic",
-        "duplicate_upload": False,
-        "summary": summary,
+        "duplicate_upload": not claimed,
+        "summary": json.loads(batch.summary or "{}"),
     }
 
 
@@ -242,6 +402,23 @@ def list_imports(
         }
         for batch in batches
     ]
+
+
+@app.get("/api/v1/data/imports/{import_id}")
+def get_import_status(import_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    batch = db.get(ImportBatch, import_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Import batch not found")
+    return {
+        "import_id": batch.id,
+        "file_name": batch.file_name,
+        "source_name": batch.source_name,
+        "data_mode": batch.data_mode,
+        "status": batch.status,
+        "summary": json.loads(batch.summary) if batch.summary else {},
+        "error": batch.error,
+        "last_updated": batch.updated_at,
+    }
 
 
 @app.get("/api/v1/market/observations", response_model=list[MarketObservationRead])
