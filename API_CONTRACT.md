@@ -87,13 +87,29 @@ serialization. Unless otherwise noted, validation errors use FastAPI's
 
 ### `POST /api/v1/data/demo`
 
-- **Purpose:** Generate or return the date-keyed synthetic demo import and run
-  the local analysis pipeline.
+- **Purpose:** Reuse a complete synthetic demo dataset, or start/recover a
+  single persisted demo-generation job and run the existing analysis pipeline.
 - **Request:** No parameters or body.
-- **200 response:** `import_id`, `status`, `data_mode: "synthetic"`,
-  `duplicate_upload`, and `summary`.
-- **Errors:** Pipeline exceptions are not given a route-specific error
-  response by this handler.
+- **200 response:** A complete existing dataset returns `import_id`,
+  `status: "completed"`, `data_mode: "synthetic"`, `duplicate_upload: true`,
+  and `summary`.
+- **202 response:** A newly started or already-running job returns
+  `import_id`, its current `status`, `data_mode: "synthetic"`,
+  `duplicate_upload`, and `summary`. Poll
+  `GET /api/v1/data/imports/{import_id}`; only a `"completed"` status means
+  generation and analysis succeeded.
+- **Idempotency and recovery:** The endpoint uses one stable demo import ID.
+  Database-conditional claiming prevents concurrent requests from starting
+  duplicate pipelines. Failed jobs can be retried after a one-minute
+  cooldown; abandoned jobs can be reclaimed after ten minutes. If the stable
+  batch is marked complete but its expected data or analysis is incomplete,
+  the endpoint reclaims that batch for an idempotent repair. Repeated calls
+  reuse an existing complete dataset and do not create another batch.
+- **Errors:** HTTP 409 if an incomplete batch cannot be claimed for repair;
+  HTTP 429 if a failed job is still in its retry cooldown. Pipeline failures
+  are recorded on the import and can be read from
+  `GET /api/v1/data/imports/{import_id}`; unexpected details are logged by
+  the backend rather than returned to the caller.
 
 ### `GET /api/v1/data/imports`
 
@@ -111,6 +127,14 @@ serialization. Unless otherwise noted, validation errors use FastAPI's
   the batch update, leaving its last persisted status even if Render marks the
   run failed.
 - **Errors:** Invalid `limit` returns HTTP 422.
+
+### `GET /api/v1/data/imports/{import_id}`
+
+- **Purpose:** Read the persisted status and summary for one import job.
+- **Path parameters:** `import_id` (string).
+- **200 response:** `import_id`, `file_name`, `source_name`, `data_mode`,
+  `status`, `summary`, `error`, and `last_updated`.
+- **Errors:** HTTP 404 if the import ID does not exist.
 
 ### `GET /api/v1/market/observations`
 

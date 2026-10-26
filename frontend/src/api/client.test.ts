@@ -173,6 +173,103 @@ describe('backend API adapter', () => {
     expect(calls.map(({ url }) => new URL(url).pathname)).toContain('/api/v1/data/imports');
   });
 
+  it('reuses an existing complete synthetic dataset without starting another import', async () => {
+    const calls: URL[] = [];
+    const symbols = ['DEMO_GOLD_100G', 'DEMO_GOLD_10G', 'DEMO_GOLD_8G', 'DEMO_GOLD_1G'];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'http://localhost');
+      calls.push(url);
+      if (url.pathname === '/api/v1/market/summary') {
+        return json({ data_sets: [{ ...dataset('synthetic'), source_name: 'synthetic-demo-provider' }] });
+      }
+      if (url.pathname === '/api/v1/data/imports') return json([{
+        import_id: 'synthetic-demo-v1', file_name: 'generated-synthetic-demo',
+        source_name: 'synthetic-demo-provider', data_mode: 'synthetic', status: 'completed',
+        summary: { valid_rows: 240 }, error: null, last_updated: '2026-10-26T20:07:17Z',
+      }]);
+      if (url.pathname === '/api/v1/contracts') return json(symbols.map((symbol, index) => ({
+        symbol,
+        expiry_date: '2026-12-10', contract_quantity: [100, 10, 8, 1][index],
+        quotation_unit: `${[100, 10, 8, 1][index]}g`, quotation_basis: 'illustrative synthetic quote',
+        verification_status: 'demo-only',
+      })));
+      if (url.pathname === '/api/v1/market/observations') return json(symbols.map((symbol) => ({
+        ...observation('2026-10-26', 7000), symbol, data_mode: 'synthetic',
+      })));
+      return new Response('unexpected route', { status: 404 });
+    });
+    const client = createClient({ fetchImpl: fetchImpl as typeof fetch, dataMode: 'synthetic' });
+
+    const result = await client.ensureDemoData();
+
+    expect(result).toMatchObject({
+      import_id: 'synthetic-demo-v1', status: 'completed', duplicate_upload: true,
+    });
+    expect(calls.some((url) => url.pathname === '/api/v1/data/demo')).toBe(false);
+  });
+
+  it('polls a newly accepted demo job until the backend records completion', async () => {
+    const calls: URL[] = [];
+    let importPolls = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'http://localhost');
+      calls.push(url);
+      if (url.pathname === '/api/v1/market/summary') return json({ data_sets: [] });
+      if (url.pathname === '/api/v1/data/imports') {
+        return json([]);
+      }
+      if (url.pathname === '/api/v1/data/imports/synthetic-demo-v1') {
+        importPolls += 1;
+        return json({
+          import_id: 'synthetic-demo-v1', file_name: 'generated-synthetic-demo',
+          source_name: 'synthetic-demo-provider', data_mode: 'synthetic',
+          status: importPolls === 1 ? 'processing' : 'completed',
+          summary: { valid_rows: importPolls === 1 ? 0 : 240 }, error: null,
+          last_updated: '2026-10-26T20:07:17Z',
+        });
+      }
+      if (url.pathname === '/api/v1/contracts' || url.pathname === '/api/v1/market/observations') return json([]);
+      if (url.pathname === '/api/v1/data/demo') {
+        return json({
+          import_id: 'synthetic-demo-v1', status: 'processing', data_mode: 'synthetic',
+          duplicate_upload: false, summary: {},
+        }, 202);
+      }
+      return new Response('unexpected route', { status: 404 });
+    });
+    const client = createClient({ fetchImpl: fetchImpl as typeof fetch, dataMode: 'synthetic' });
+
+    const result = await client.ensureDemoData();
+
+    expect(result).toMatchObject({ import_id: 'synthetic-demo-v1', status: 'completed' });
+    expect(importPolls).toBe(2);
+    expect(calls.some((url) => url.pathname === '/api/v1/data/demo')).toBe(true);
+  });
+
+  it('reports a persisted demo failure and never treats it as success', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'http://localhost');
+      if (url.pathname === '/api/v1/market/summary') return json({ data_sets: [] });
+      if (url.pathname === '/api/v1/data/imports') return json([]);
+      if (url.pathname === '/api/v1/contracts' || url.pathname === '/api/v1/market/observations') return json([]);
+      if (url.pathname === '/api/v1/data/demo') {
+        return json({
+          import_id: 'synthetic-demo-v1', status: 'processing', data_mode: 'synthetic',
+          duplicate_upload: false, summary: {},
+        }, 202);
+      }
+      if (url.pathname === '/api/v1/data/imports/synthetic-demo-v1') return json({
+        import_id: 'synthetic-demo-v1', file_name: 'generated-synthetic-demo',
+        source_name: 'synthetic-demo-provider', data_mode: 'synthetic', status: 'failed',
+        summary: {}, error: 'Demo pipeline validation failed', last_updated: '2026-10-26T20:07:17Z',
+      });
+      return new Response('unexpected route', { status: 404 });
+    });
+    const client = createClient({ fetchImpl: fetchImpl as typeof fetch, dataMode: 'synthetic' });
+
+    await expect(client.ensureDemoData()).rejects.toThrow('Demo pipeline validation failed');
+  });
+
   it('uses multipart upload, backend demo POST, and import-specific workflow submission', async () => {
     const { client, calls } = mockBackend();
     const file = new File(['symbol,close'], 'prices.csv', { type: 'text/csv' });

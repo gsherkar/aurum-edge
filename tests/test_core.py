@@ -222,6 +222,10 @@ def test_api_contract_paths_match_registered_openapi_routes():
         for method in methods
     }
     assert documented_routes == registered_routes
+    demo_responses = app.openapi()["paths"]["/api/v1/data/demo"]["post"]["responses"]
+    assert "200" in demo_responses
+    assert "202" in demo_responses
+    assert "/api/v1/data/imports/{import_id}" in app.openapi()["paths"]
 
 
 def test_cors_allows_frontend_origins_without_wildcard():
@@ -335,9 +339,21 @@ def test_api_imports_historical_file_and_keeps_demo_separate(monkeypatch):
         assert duplicate.json()["duplicate_upload"] is True
 
         demo_response = client.post("/api/v1/data/demo")
-        assert demo_response.status_code == 200
+        assert demo_response.status_code == 202
         assert demo_response.json()["data_mode"] == "synthetic"
-        assert demo_response.json()["summary"]["normalized_records"] == 240
+        assert demo_response.json()["status"] == "processing"
+        demo_import_id = demo_response.json()["import_id"]
+        demo_batch = next(
+            batch
+            for batch in client.get("/api/v1/data/imports").json()
+            if batch["import_id"] == demo_import_id
+        )
+        assert demo_batch["status"] == "completed"
+        assert demo_batch["summary"]["normalized_records"] == 240
+        repeated_demo = client.post("/api/v1/data/demo")
+        assert repeated_demo.status_code == 200
+        assert repeated_demo.json()["import_id"] == demo_import_id
+        assert repeated_demo.json()["duplicate_upload"] is True
         demo_contracts = client.get("/api/v1/contracts?data_mode=synthetic").json()
         assert {
             contract["symbol"]: (contract["contract_quantity"], contract["quotation_unit"], contract["verification_status"])
@@ -382,6 +398,7 @@ def test_api_imports_historical_file_and_keeps_demo_separate(monkeypatch):
             "/health",
             "/api/v1/contracts",
             "/api/v1/data/imports",
+            f"/api/v1/data/imports/{demo_import_id}",
             "/api/v1/market/observations",
             "/api/v1/market/summary",
             "/api/v1/alerts",
@@ -390,6 +407,147 @@ def test_api_imports_historical_file_and_keeps_demo_separate(monkeypatch):
         for path in get_paths:
             assert client.get(path).status_code == 200, path
         assert database_snapshot() == before_gets
+
+
+def test_demo_job_failure_is_persisted_without_leaking_exception_details(monkeypatch):
+    import app.main as main_module
+    from app.db import SessionLocal
+    from app.models import ImportBatch
+
+    import_id = "demo-job-failure-test"
+    with SessionLocal() as db:
+        db.add(
+            ImportBatch(
+                id=import_id,
+                file_name="generated-synthetic-demo",
+                source_name="synthetic-demo-provider",
+                data_mode="synthetic",
+                status="processing",
+            )
+        )
+        db.commit()
+
+    def fail_pipeline(_: str) -> dict[str, object]:
+        raise RuntimeError("sensitive database driver details")
+
+    monkeypatch.setattr(main_module, "run_local_pipeline", fail_pipeline)
+    main_module._run_demo_pipeline(import_id)
+
+    with SessionLocal() as db:
+        batch = db.get(ImportBatch, import_id)
+        assert batch is not None
+        assert batch.status == "failed"
+        assert batch.error == "RuntimeError; see workflow task logs for details"
+
+
+def test_demo_job_claim_is_atomic_for_concurrent_requests():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    import app.main as main_module
+    from app.db import SessionLocal
+    from app.models import ImportBatch
+
+    import_id = "demo-claim-concurrency-test"
+    with SessionLocal() as db:
+        db.add(
+            ImportBatch(
+                id=import_id,
+                file_name="generated-synthetic-demo",
+                source_name="synthetic-demo-provider",
+                data_mode="synthetic",
+                status="uploaded",
+            )
+        )
+        db.commit()
+
+    barrier = Barrier(8)
+
+    def claim() -> bool:
+        with SessionLocal() as db:
+            barrier.wait()
+            return main_module._claim_demo_generation(db, import_id)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        claims = list(executor.map(lambda _: claim(), range(8)))
+
+    assert sum(claims) == 1
+
+
+def test_demo_job_claim_recovers_stale_jobs_but_respects_failed_retry_cooldown():
+    from app.db import SessionLocal
+    from app.main import DEMO_RETRY_COOLDOWN, DEMO_JOB_STALE_AFTER, _claim_demo_generation
+    from app.models import ImportBatch, utc_now
+
+    now = utc_now()
+    batches = {
+        "demo-stale-job-test": ("processing", now - DEMO_JOB_STALE_AFTER - timedelta(seconds=1)),
+        "demo-recent-job-test": ("processing", now),
+        "demo-recent-failure-test": ("failed", now - DEMO_RETRY_COOLDOWN + timedelta(seconds=1)),
+        "demo-old-failure-test": ("failed", now - DEMO_RETRY_COOLDOWN - timedelta(seconds=1)),
+    }
+    with SessionLocal() as db:
+        for import_id, (status, updated_at) in batches.items():
+            db.add(
+                ImportBatch(
+                    id=import_id,
+                    file_name="generated-synthetic-demo",
+                    source_name="synthetic-demo-provider",
+                    data_mode="synthetic",
+                    status=status,
+                    updated_at=updated_at,
+                )
+            )
+        db.commit()
+
+    with SessionLocal() as db:
+        assert _claim_demo_generation(db, "demo-stale-job-test") is True
+        assert _claim_demo_generation(db, "demo-recent-job-test") is False
+        assert _claim_demo_generation(db, "demo-recent-failure-test") is False
+        assert _claim_demo_generation(db, "demo-old-failure-test") is True
+
+
+def test_incomplete_completed_demo_batch_is_repaired_without_new_batch(monkeypatch):
+    import app.main as main_module
+    from app.db import SessionLocal
+    from app.models import ImportBatch
+
+    import_id = "incomplete-demo-repair-test"
+    monkeypatch.setattr(main_module, "DEMO_IMPORT_ID", import_id)
+    monkeypatch.setattr(main_module, "_find_complete_demo_batch", lambda _: None)
+    with SessionLocal() as db:
+        db.add(
+            ImportBatch(
+                id=import_id,
+                file_name="generated-synthetic-demo",
+                source_name="synthetic-demo-provider",
+                data_mode="synthetic",
+                status="completed",
+                summary="{}",
+            )
+        )
+        db.commit()
+
+    def finish_repair(batch_id: str) -> dict[str, object]:
+        assert batch_id == import_id
+        with SessionLocal() as db:
+            batch = db.get(ImportBatch, batch_id)
+            assert batch is not None
+            batch.status = "completed"
+            batch.summary = '{"valid_rows": 240}'
+            db.commit()
+        return {"valid_rows": 240}
+
+    monkeypatch.setattr(main_module, "run_local_pipeline", finish_repair)
+    with TestClient(app) as client:
+        response = client.post("/api/v1/data/demo")
+        assert response.status_code == 202
+        assert response.json()["import_id"] == import_id
+        assert response.json()["status"] == "processing"
+        status = client.get(f"/api/v1/data/imports/{import_id}")
+        assert status.status_code == 200
+        assert status.json()["status"] == "completed"
+        assert status.json()["summary"]["valid_rows"] == 240
 
 
 def test_alert_limit_applies_after_eligibility_and_preserves_order():

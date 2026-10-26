@@ -39,6 +39,7 @@ const summaryRows = (value: unknown): JsonRecord[] => {
 };
 const selectedSummary = (value: unknown, mode: T.BackendDataMode): JsonRecord | undefined =>
   summaryRows(value).find((row) => row.data_mode === mode);
+const demoContractSymbols = ['DEMO_GOLD_100G', 'DEMO_GOLD_10G', 'DEMO_GOLD_8G', 'DEMO_GOLD_1G'];
 
 export function createClient({
   baseUrl = '',
@@ -114,7 +115,13 @@ export function createClient({
   }
 
   async function loadImports(): Promise<T.ImportBatch[]> {
-    return records(await request('/api/v1/data/imports', { limit: '50' })).map((row) => ({
+    return records(await request('/api/v1/data/imports', { limit: '50' }))
+      .map(mapImport)
+      .filter((batch) => batch.import_id.length > 0);
+  }
+
+  function mapImport(row: JsonRecord): T.ImportBatch {
+    return {
       import_id: text(row.import_id) ?? '',
       file_name: text(row.file_name) ?? 'Unknown file',
       source_name: text(row.source_name) ?? 'Unknown source',
@@ -123,7 +130,34 @@ export function createClient({
       summary: isRecord(row.summary) ? row.summary : {},
       error: text(row.error),
       last_updated: text(row.last_updated),
-    })).filter((batch) => batch.import_id.length > 0);
+    };
+  }
+
+  async function loadImport(importId: string): Promise<T.ImportBatch> {
+    const value = await request(`/api/v1/data/imports/${encodeURIComponent(importId)}`);
+    if (!isRecord(value)) throw new ApiError('parse', 'Backend import status has an unexpected response shape.');
+    const batch = mapImport(value);
+    if (!batch.import_id) throw new ApiError('parse', 'Backend import status is missing its import ID.');
+    return batch;
+  }
+
+  async function loadContracts(): Promise<T.ContractsResponse> {
+    const rows = records(await request('/api/v1/contracts', { data_mode: dataMode }));
+    return {
+      data_mode: dataMode,
+      contracts: rows.map((row) => ({
+        symbol: text(row.symbol) ?? 'Unknown',
+        expiry: text(row.expiry_date),
+        quantity: num(row.contract_quantity),
+        quantity_unit: row.verification_status === 'demo-only' ? 'grams' : text(row.quotation_unit),
+        quotation_basis: text(row.quotation_basis),
+        purity: num(row.purity),
+        delivery_location: text(row.delivery_location),
+        spec_status: row.verification_status === 'verified' || row.verification_status === 'unverified' || row.verification_status === 'demo-only'
+          ? row.verification_status : 'unverified',
+        eligible: null,
+      })),
+    };
   }
 
   async function mapDataStatus(): Promise<T.DataStatus> {
@@ -150,6 +184,80 @@ export function createClient({
       upload_supported: true,
       imports,
     };
+  }
+
+  async function createDemoData(): Promise<T.UploadResult> {
+    const value = await request('/api/v1/data/demo', undefined, { method: 'POST' });
+    if (!isRecord(value)) {
+      throw new ApiError('parse', 'Backend demo response is missing its import ID or status.');
+    }
+    const importId = text(value.import_id);
+    const status = text(value.status);
+    if (!importId || !status) throw new ApiError('parse', 'Backend demo response is missing its import ID or status.');
+    return {
+      import_id: importId,
+      status,
+      data_mode: 'synthetic',
+      source_name: text(value.source_name),
+      summary: isRecord(value.summary) ? value.summary : {},
+      duplicate_upload: value.duplicate_upload === true,
+    };
+  }
+
+  async function ensureDemoData(): Promise<T.UploadResult> {
+    if (dataMode === 'synthetic') {
+      const [status, contractData, history] = await Promise.all([
+        mapDataStatus(),
+        loadContracts(),
+        loadHistory(),
+      ]);
+      const completedImport = status.imports.find((batch) =>
+        batch.source_name === 'synthetic-demo-provider'
+        && batch.data_mode === 'synthetic'
+        && batch.status === 'completed'
+        && (batch.summary.valid_rows ?? 0) > 0);
+      const historyBySymbol = new Map(history.series.map((series) => [
+        series.symbol,
+        series.points.some((point) => point.normalized_price != null),
+      ]));
+      const contractSymbols = contractData.contracts.map((contract) => contract.symbol).sort();
+      const hasDemoContracts = contractSymbols.length === demoContractSymbols.length
+        && demoContractSymbols.every((symbol) => contractSymbols.includes(symbol))
+        && contractData.contracts.every((contract) =>
+          contract.spec_status === 'demo-only' && historyBySymbol.get(contract.symbol) === true);
+      if (status.data_mode === 'synthetic' && completedImport && hasDemoContracts) {
+        return {
+          import_id: completedImport.import_id,
+          status: 'completed',
+          data_mode: 'synthetic',
+          source_name: completedImport.source_name,
+          summary: completedImport.summary,
+          duplicate_upload: true,
+        };
+      }
+    }
+
+    const accepted = await createDemoData();
+    if (accepted.status === 'completed') return accepted;
+
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 1000));
+      const batch = await loadImport(accepted.import_id);
+      if (batch.status === 'completed') {
+        return {
+          ...accepted,
+          status: 'completed',
+          source_name: batch.source_name,
+          summary: batch.summary,
+          duplicate_upload: accepted.duplicate_upload,
+        };
+      }
+      if (batch.status === 'failed') {
+        throw new Error(batch.error ?? 'Synthetic demo generation failed. Retry from the Data section.');
+      }
+    }
+    throw new Error('Synthetic demo generation is still processing. Refresh the Data section to check its status.');
   }
 
   async function upload(file: File, options: { dataDate?: string; columnMapping?: string } = {}): Promise<T.UploadResult> {
@@ -207,24 +315,7 @@ export function createClient({
         latest_workflow: null,
       };
     },
-    contracts: async (): Promise<T.ContractsResponse> => {
-      const rows = records(await request('/api/v1/contracts', { data_mode: dataMode }));
-      return {
-        data_mode: dataMode,
-        contracts: rows.map((row) => ({
-          symbol: text(row.symbol) ?? 'Unknown',
-          expiry: text(row.expiry_date),
-          quantity: num(row.contract_quantity),
-          quantity_unit: row.verification_status === 'demo-only' ? 'grams' : text(row.quotation_unit),
-          quotation_basis: text(row.quotation_basis),
-          purity: num(row.purity),
-          delivery_location: text(row.delivery_location),
-          spec_status: row.verification_status === 'verified' || row.verification_status === 'unverified' || row.verification_status === 'demo-only'
-            ? row.verification_status : 'unverified',
-          eligible: null,
-        })),
-      };
-    },
+    contracts: loadContracts,
     history: async (params: { symbols?: string[]; start?: string; end?: string } = {}) => {
       const history = await loadHistory();
       return {
@@ -353,23 +444,9 @@ export function createClient({
     },
     dataStatus: mapDataStatus,
     imports: loadImports,
-    createDemoData: async (): Promise<T.UploadResult> => {
-      const value = await request('/api/v1/data/demo', undefined, { method: 'POST' });
-      if (!isRecord(value)) {
-        throw new ApiError('parse', 'Backend demo response is missing its import ID or status.');
-      }
-      const importId = text(value.import_id);
-      const status = text(value.status);
-      if (!importId || !status) throw new ApiError('parse', 'Backend demo response is missing its import ID or status.');
-      return {
-        import_id: importId,
-        status,
-        data_mode: 'synthetic',
-        source_name: text(value.source_name),
-        summary: isRecord(value.summary) ? value.summary : {},
-        duplicate_upload: value.duplicate_upload === true,
-      };
-    },
+    importStatus: loadImport,
+    createDemoData,
+    ensureDemoData,
     workflow: async (importId: string): Promise<T.WorkflowTriggerResponse> => {
       const value = await request(`/api/v1/workflows/imports/${encodeURIComponent(importId)}/run`, undefined, { method: 'POST' });
       if (!isRecord(value)) {

@@ -46,6 +46,13 @@ Try the separately labelled synthetic fixture:
 curl.exe -X POST "http://127.0.0.1:8000/api/v1/data/demo"
 ```
 
+The request starts or reuses one idempotent backend job and returns `202`
+while the pipeline runs. Poll `GET /api/v1/data/imports` until that batch is
+`completed`, or query `GET /api/v1/data/imports/{import_id}` directly; a
+failed status includes a safe error summary. The application
+does this check automatically on first visit in API mode and selects the
+synthetic dataset by default.
+
 The synthetic fixture contains four illustrative demo contracts:
 `DEMO_GOLD_100G` (100 grams), `DEMO_GOLD_10G` (10 grams),
 `DEMO_GOLD_8G` (8 grams), and `DEMO_GOLD_1G` (1 gram). Their generated
@@ -84,8 +91,9 @@ are documented in [API_CONTRACT.md](./API_CONTRACT.md). The running
 - `GET /api/v1/contracts` — registered contract specification versions
 - `POST /api/v1/contracts` — register a versioned specification
 - `POST /api/v1/data/files` — import a historical CSV/XLS/XLSX file
-- `POST /api/v1/data/demo` — generate synthetic sample observations
+- `POST /api/v1/data/demo` — reuse or start the single synthetic demo job
 - `GET /api/v1/data/imports` — import status, provenance, and summaries
+- `GET /api/v1/data/imports/{import_id}` — status for one import job
 - `GET /api/v1/market/observations` — persisted source observations
 - `GET /api/v1/market/summary` — separate `historical_file` and `synthetic` snapshots, with data date, source, last update, freshness, and normalized consensus
 - `GET /api/v1/alerts` — explainable research alerts and individual guard results
@@ -99,7 +107,7 @@ GET endpoints read persisted normalized observations and analysis results; norma
 
 ### Free Render API and Neon PostgreSQL
 
-The [Render Blueprint](./render.yaml) provisions only a free FastAPI web service and free static frontend. It intentionally does not provision a database or Workflow service. Render's free Postgres expires after 30 days, and Workflow task compute and retained task state are billed separately. The API runs imports synchronously when `RENDER_API_KEY` and `RENDER_WORKFLOW_TASK_SLUG` are not configured, so neither is required for this prototype.
+The [Render Blueprint](./render.yaml) provisions only a free FastAPI web service and free static frontend. It intentionally does not provision a database or Workflow service. Render's free Postgres expires after 30 days, and Workflow task compute and retained task state are billed separately. Historical file imports run synchronously when `RENDER_API_KEY` and `RENDER_WORKFLOW_TASK_SLUG` are not configured; synthetic demo generation uses a persisted background job and import-status polling.
 
 For a no-charge prototype deployment, use Render Free for the API and static site and Neon Free for PostgreSQL. Neon currently describes its Free plan as permanent and not requiring a credit card; it includes 100 CU-hours and 1 GB of database storage per project, 5 GB public data transfer, and scales compute to zero after five idle minutes. Provider limits and plan terms can change; review the current [Render free-instance limits](https://render.com/docs/free), [Render Workflow pricing](https://render.com/docs/workflows-limits), and [Neon plans](https://neon.com/docs/introduction/plans) before creating resources.
 
@@ -111,11 +119,11 @@ For a no-charge prototype deployment, use Render Free for the API and static sit
 4. Set the static site's build-time variables to `VITE_DATA_SOURCE=api` and `VITE_API_BASE_URL` equal to the API's public origin (for example, `https://<api-host>.onrender.com`, with no trailing slash). Redeploy the static site after changing either value.
 5. If a service is deployed before the other one's public URL is known, update the corresponding variable after the URL is assigned and redeploy the affected service. Configure `DATABASE_URL` before the first API deploy; production startup fails if it is missing or does not identify PostgreSQL.
 6. Use a new, empty Neon database for this deployment. Startup creates missing tables with SQLAlchemy `create_all`; the additional schema migrations in this project are SQLite-only, so existing PostgreSQL schemas are not upgraded automatically.
-7. Once both services deploy, initialize only the new hosted database with the clearly labelled synthetic dataset using `POST /api/v1/data/demo`. Verify `GET /health`, `GET /api/v1/contracts?data_mode=synthetic`, `GET /api/v1/market/observations?data_mode=synthetic`, `GET /api/v1/market/summary`, `GET /api/v1/alerts?data_mode=synthetic`, and `GET /api/v1/analysis/backtest?data_mode=synthetic`. This is illustrative data, not live MCX data.
+7. On first visit, API mode checks for a complete synthetic dataset and starts the bounded, idempotent demo job only if needed. It selects synthetic data by default. If recovery is needed, `POST /api/v1/data/demo` returns an import ID; poll `GET /api/v1/data/imports/{import_id}` until it reports `completed`. Verify `GET /health`, `GET /api/v1/contracts?data_mode=synthetic`, `GET /api/v1/market/observations?data_mode=synthetic`, `GET /api/v1/market/summary`, `GET /api/v1/alerts?data_mode=synthetic`, and `GET /api/v1/analysis/backtest?data_mode=synthetic`. This is illustrative data, not live MCX data.
 
 The Blueprint sets `APP_ENV=production` and asks for `DATABASE_URL`, `CORS_ALLOWED_ORIGINS`, and `VITE_API_BASE_URL` in the provider dashboard; `VITE_DATA_SOURCE=api` is preset. The API rejects SQLite or a missing/non-PostgreSQL database URL in production, rather than silently using its local SQLite default. Never commit database URLs or provider credentials. The Render free API may sleep after 15 minutes without traffic, take about a minute to wake, and has an ephemeral filesystem. Its free instance hours are shared across the workspace. Neon Free is limited to 100 CU-hours, 1 GB storage, and 5 GB public data transfer per project and scales to zero after five minutes idle. Recheck provider limits before deployment.
 
-This prototype does not authenticate its write endpoints: contract creation, demo generation, file uploads, and workflow triggering are publicly callable. CORS is not authentication. Keep the hosted database limited to synthetic demo data and add access controls/rate limits before using the service for sensitive or broader public workloads.
+This prototype does not authenticate its write endpoints: contract creation, file uploads, and workflow triggering are publicly callable. CORS is not authentication. Demo generation is limited to one stable import batch, claimed atomically, and throttles retries after failures; it still is not an authorization boundary. Keep the hosted database limited to synthetic demo data and add access controls before using the service for sensitive or broader public workloads.
 
 ### Optional Render Workflows (billed)
 
@@ -170,7 +178,7 @@ curl.exe -X POST "https://<your-api-host>/api/v1/workflows/imports/<import_id>/r
 
 `RENDER_API_KEY` is a Render account key used only to submit workflow tasks; it is not an MCX or market-data key. It is optional; local import and analysis work without it.
 
-For local use, `POST /api/v1/data/files` and `POST /api/v1/data/demo` run the same nine-stage pipeline synchronously without a Render account. A failed task records the import batch as `failed` when application code can catch the exception and re-raises it for Render's retry policy; an abrupt process/infrastructure failure may leave the last persisted batch status unchanged. Each stage commits independently, so earlier work can remain persisted after a later stage fails. Re-running a workflow stage is designed to be idempotent for the same import, but the workflow is not an all-or-nothing database transaction. No hosted deployment or workflow run has been performed from this development environment.
+For local use, `POST /api/v1/data/files` runs the pipeline synchronously when no Render Workflow is configured. `POST /api/v1/data/demo` starts the persisted demo job in the API process and returns before pipeline completion; poll the import status until it is `completed`. A failed job records a safe error summary, while unexpected details remain in the API logs. Each pipeline stage commits independently, so earlier work can remain persisted after a later stage fails. Re-running a workflow stage is designed to be idempotent for the same import, but the workflow is not an all-or-nothing database transaction. No hosted deployment or workflow run has been performed from this development environment.
 
 Render bills Workflow task runs by compute time and retained state. As of this documentation check, the default Flex plan is billed at $0.20 per CPU-hour and $0.05 per GB-hour, and task state retention costs $0.25 per GB for 30 days. A nine-stage run launches multiple task runs, so total cost depends on runtime, resources, and result sizes. Check the [current Workflows pricing and limits](https://render.com/docs/workflows-limits) before enabling it. This repository has not created a hosted service or run.
 

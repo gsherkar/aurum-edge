@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { useApp, useReportMode } from '../components/AppContext';
+import { ApiError } from '../api/client';
 import { Async, Card, ModeBadge, Stat } from '../components/ui';
 import { useResource } from '../hooks/useResource';
 import { fmtDate, fmtDateTime, fmtInt, UNAVAILABLE } from '../lib/format';
@@ -60,7 +61,7 @@ function Upload() {
   );
 }
 
-function CreateDemoData() {
+function CreateDemoData({ onDemoReady }: { onDemoReady: () => void }) {
   const { client, refreshAll, setDataMode } = useApp();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -69,12 +70,15 @@ function CreateDemoData() {
     setBusy(true);
     setMessage('');
     try {
-      const result = await client.createDemoData();
+      const result = await client.ensureDemoData();
       setDataMode('synthetic');
-      setMessage(`Synthetic dataset created by the backend (${result.import_id}). These are not live prices.`);
+      onDemoReady();
+      setMessage(`Synthetic dataset ready from the backend (${result.import_id}). These are illustrative values, not live prices.`);
       refreshAll();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Could not create backend synthetic data.');
+      setMessage(error instanceof ApiError
+        ? error.detail ?? error.message
+        : error instanceof Error ? error.message : 'Could not create backend synthetic data.');
     } finally {
       setBusy(false);
     }
@@ -82,12 +86,13 @@ function CreateDemoData() {
   return (
     <div className="upload">
       <button className="btn" onClick={create} disabled={busy}>{busy ? 'Creating…' : 'Create synthetic demo dataset'}</button>
-      {message && <p className={message.startsWith('Synthetic dataset') ? 'note warn' : 'error'} role="status">{message}</p>}
+      {message && <p className={message.startsWith('Synthetic dataset') ? 'note warn' : 'error'}
+        role={message.startsWith('Synthetic dataset') ? 'status' : 'alert'}>{message}</p>}
     </div>
   );
 }
 
-export default function DataStatus() {
+export default function DataStatus({ onDemoReady }: { onDemoReady: () => void }) {
   const { client, refreshKey, dataMode, sampleMode } = useApp();
   const res = useResource(() => client.dataStatus(), [client, refreshKey]);
   useReportMode('data', res.data?.data_mode);
@@ -110,7 +115,7 @@ export default function DataStatus() {
           {sampleMode
             ? <p className="note">File upload and dataset creation require the backend and are disabled in this preview.</p>
             : data.upload_supported ? <Upload /> : <p className="note">File import is not enabled on this backend.</p>}
-          {!sampleMode && <CreateDemoData />}
+          {!sampleMode && <CreateDemoData onDemoReady={onDemoReady} />}
           <h3>Recent imports</h3>
           {data.imports.length === 0 ? <p className="empty">No file or synthetic-data imports have been recorded.</p> : (
             <div className="table-wrap"><table>
