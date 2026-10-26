@@ -6,6 +6,7 @@ class Settings(BaseSettings):
 
     app_name: str = "Aurum Edge"
     database_url: str = "sqlite:///./aurum_edge.db"
+    cors_allowed_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     debug: bool = False
     max_upload_bytes: int = 20_000_000
     stale_after_days: int = 5
