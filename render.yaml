@@ -6,31 +6,16 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
       - key: APP_NAME
         value: Aurum Edge
+      - key: APP_ENV
+        value: production
       - key: DATABASE_URL
-        fromDatabase:
-          name: aurum-edge-db
-          property: connectionString
+        sync: false
       - key: CORS_ALLOWED_ORIGINS
-        value: http://localhost:5173,http://127.0.0.1:5173
-      - key: PYTHON_VERSION
-        value: 3.12.9
-
-  - type: workflow
-    name: aurum-edge-workflows
-    runtime: python
-    region: oregon
-    buildCommand: pip install -r requirements.txt
-    startCommand: render-workflows app.workflow:workflow
-    envVars:
-      - key: APP_NAME
-        value: Aurum Edge
-      - key: DATABASE_URL
-        fromDatabase:
-          name: aurum-edge-db
-          property: connectionString
+        sync: false
       - key: PYTHON_VERSION
         value: 3.12.9
 
@@ -49,10 +34,3 @@ services:
       - type: rewrite
         source: /*
         destination: /index.html
-
-databases:
-  - name: aurum-edge-db
-    databaseName: aurum_edge
-    user: aurum_edge
-    region: oregon
-    plan: free

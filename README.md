@@ -97,38 +97,42 @@ GET endpoints read persisted normalized observations and analysis results; norma
 
 ## Render deployment
 
-### FastAPI and PostgreSQL
+### Free Render API and Neon PostgreSQL
 
-Create a Render Blueprint from the branch you intend to deploy and review the proposed resources before applying [render.yaml](./render.yaml). It defines the web API, static frontend, PostgreSQL database, and Workflow service. The frontend build needs `VITE_API_BASE_URL` set to the API's public URL. After Render assigns the frontend URL, set the API's `CORS_ALLOWED_ORIGINS` to that exact origin (without a trailing slash); the checked-in default only permits local Vite origins. Check current Render plan availability/pricing before provisioning; the API and database currently use the free plan where available, while Workflow task runs are billed separately. Set production configuration/secrets in the Render Dashboard, not in Git.
+The [Render Blueprint](./render.yaml) provisions only a free FastAPI web service and free static frontend. It intentionally does not provision a database or Workflow service. Render's free Postgres expires after 30 days, and Workflow task compute and retained task state are billed separately. The API runs imports synchronously when `RENDER_API_KEY` and `RENDER_WORKFLOW_TASK_SLUG` are not configured, so neither is required for this prototype.
 
-### Render Workflows
+For a no-charge prototype deployment, use Render Free for the API and static site and Neon Free for PostgreSQL. Neon currently describes its Free plan as permanent and not requiring a credit card; it includes 100 CU-hours and 1 GB of database storage per project, 5 GB public data transfer, and scales compute to zero after five idle minutes. Provider limits and plan terms can change; review the current [Render free-instance limits](https://render.com/docs/free), [Render Workflow pricing](https://render.com/docs/workflows-limits), and [Neon plans](https://neon.com/docs/introduction/plans) before creating resources.
 
-This repo defines nine actual tasks with Render's [Python SDK](https://render.com/docs/workflows-sdk-python) in `app/workflow.py`; each task executes its stage and chains to the next task using `TaskContext.run`. The registered chain is:
+#### Dashboard deployment
 
-1. `ingest_market_data`
-2. `validate_market_data`
-3. `persist_market_data`
-4. `normalize_contracts`
-5. `calculate_consensus`
-6. `detect_anomalies`
-7. `apply_risk_guards`
-8. `persist_analysis_results`
-9. `produce_run_summary`
+1. In Render, create a Blueprint from `gsherkar/aurum-edge` on the `main` branch and review that it will create only `aurum-edge-api` (Free web service) and `aurum-edge-frontend` (static site). Do not add a paid service or Workflow.
+2. In Neon, create a Free PostgreSQL project. Copy its connection string directly from the Neon dashboard into the Render API's `DATABASE_URL` environment variable before the first API deploy. Do not put the URL in this repository or a local `.env` file.
+3. Set the API's `CORS_ALLOWED_ORIGINS` to the exact frontend origin assigned by Render (for example, `https://<frontend-host>.onrender.com`, with no trailing slash). The API health check is `GET /health`.
+4. Set the static site's build-time variables to `VITE_DATA_SOURCE=api` and `VITE_API_BASE_URL` equal to the API's public origin (for example, `https://<api-host>.onrender.com`, with no trailing slash). Redeploy the static site after changing either value.
+5. If a service is deployed before the other one's public URL is known, update the corresponding variable after the URL is assigned and redeploy the affected service. Configure `DATABASE_URL` before the first API deploy; production startup fails if it is missing or does not identify PostgreSQL.
+6. Use a new, empty Neon database for this deployment. Startup creates missing tables with SQLAlchemy `create_all`; the additional schema migrations in this project are SQLite-only, so existing PostgreSQL schemas are not upgraded automatically.
+7. Once both services deploy, initialize only the new hosted database with the clearly labelled synthetic dataset using `POST /api/v1/data/demo`. Verify `GET /health`, `GET /api/v1/contracts?data_mode=synthetic`, `GET /api/v1/market/observations?data_mode=synthetic`, `GET /api/v1/market/summary`, `GET /api/v1/alerts?data_mode=synthetic`, and `GET /api/v1/analysis/backtest?data_mode=synthetic`. This is illustrative data, not live MCX data.
 
-The [current Blueprint specification](https://render.com/docs/blueprint-spec) supports `type: workflow`; `render.yaml` now defines the API, PostgreSQL, and Workflow resources together. Create or sync the Blueprint from the `feature/quant-engine` branch, inspect all three proposed resources before applying it, and confirm they are in Oregon. If you configure the Workflow separately from the Blueprint instead, choose **New > Workflow**, connect this repository and branch, select Python 3 and Oregon, set the build command to `pip install -r requirements.txt`, and set the start command to:
+The Blueprint sets `APP_ENV=production` and asks for `DATABASE_URL`, `CORS_ALLOWED_ORIGINS`, and `VITE_API_BASE_URL` in the provider dashboard; `VITE_DATA_SOURCE=api` is preset. The API rejects SQLite or a missing/non-PostgreSQL database URL in production, rather than silently using its local SQLite default. Never commit database URLs or provider credentials. The Render free API may sleep after 15 minutes without traffic, take about a minute to wake, and has an ephemeral filesystem. Its free instance hours are shared across the workspace. Neon Free is limited to 100 CU-hours, 1 GB storage, and 5 GB public data transfer per project and scales to zero after five minutes idle. Recheck provider limits before deployment.
+
+This prototype does not authenticate its write endpoints: contract creation, demo generation, file uploads, and workflow triggering are publicly callable. CORS is not authentication. Keep the hosted database limited to synthetic demo data and add access controls/rate limits before using the service for sensitive or broader public workloads.
+
+### Optional Render Workflows (billed)
+
+Workflows are not included in the free Blueprint; use the following only if you deliberately choose the separately billed service. The [Blueprint specification](https://render.com/docs/blueprint-spec) supports `type: workflow`, but this project's Blueprint omits it. To configure one separately, choose **New > Workflow**, connect this repository's `main` branch, select Python 3 and Oregon, set the build command to `pip install -r requirements.txt`, and set the start command to:
 
 ```text
 render-workflows app.workflow:workflow
 ```
 
-Deploy the Workflow service to register its tasks. The Blueprint gives the API and Workflow service the same `DATABASE_URL` reference to `aurum-edge-db`, and sets the web, Workflow, and database regions to Oregon so they can communicate over Render's private network. The Workflow SDK needs Render-provided `RENDER_SDK_MODE` and `RENDER_SDK_SOCKET_PATH` values at runtime; do not set these manually. The `render-workflows` start command invokes `workflow.start()` to register and run the defined tasks.
+Deploy the Workflow service to register its tasks. Configure the same PostgreSQL `DATABASE_URL` on both services. The Workflow SDK needs Render-provided `RENDER_SDK_MODE` and `RENDER_SDK_SOCKET_PATH` values at runtime; do not set these manually. The `render-workflows` start command invokes `workflow.start()` to register and run the defined tasks.
 
 Each task uses the Render SDK's documented default retry policy (up to three retries after the initial attempt). When a task raises an exception while its code is running, the wrapper records the import batch as `failed` and re-raises the error so Render can retry it; a safe error summary is available from the import-status endpoint, while unexpected exception details remain in the Workflow task logs. A process termination or infrastructure timeout may prevent the wrapper from recording a failure, leaving the batch at its last persisted stage even though Render marks the run failed. Stages commit independently, so a failed run can leave earlier stage results persisted. The stage operations are designed to be repeatable, and a successful final stage changes the batch to `completed` and clears a prior retry error. This is not a single all-or-nothing database transaction.
 
 To execute a first hosted infrastructure test using synthetic data:
 
-1. Wait for the API, PostgreSQL, and Workflow resources to finish deploying. The Workflow service should list all nine tasks.
-2. Call `POST /api/v1/data/demo` on the deployed API and copy its returned `import_id` (for example, `synthetic-demo-2026-10-25`). This creates clearly labelled synthetic rows in the shared PostgreSQL database and runs the API's local pipeline once.
+1. Wait for the API, external PostgreSQL, and Workflow resources to finish deploying. The Workflow service should list all nine tasks.
+2. Call `POST /api/v1/data/demo` on the deployed API and copy its returned `import_id`. This creates clearly labelled synthetic rows in the shared PostgreSQL database and runs the API's local pipeline once.
 3. In the Render Workflow Dashboard, open the `ingest_market_data` task, click **Start Task**, and enter the JSON input array `["<import_id>"]`, replacing the placeholder with the returned ID. The `import_id` is the only task argument; chained tasks pass it forward automatically.
 4. Watch the root task and its chained runs in the Workflow Dashboard. Check each run's status and logs. On success, the final `produce_run_summary` result should contain `"status": "completed"`.
 5. Verify persisted output through the deployed API: `GET /api/v1/data/imports?limit=20` should show the batch as `completed`; `GET /api/v1/market/observations?data_mode=synthetic&limit=10` should return normalized observations; and `GET /api/v1/alerts?data_mode=synthetic` should show any persisted eligible alerts. Alert count can be zero if no candidates pass configured guards.
@@ -168,7 +172,7 @@ curl.exe -X POST "https://<your-api-host>/api/v1/workflows/imports/<import_id>/r
 
 For local use, `POST /api/v1/data/files` and `POST /api/v1/data/demo` run the same nine-stage pipeline synchronously without a Render account. A failed task records the import batch as `failed` when application code can catch the exception and re-raises it for Render's retry policy; an abrupt process/infrastructure failure may leave the last persisted batch status unchanged. Each stage commits independently, so earlier work can remain persisted after a later stage fails. Re-running a workflow stage is designed to be idempotent for the same import, but the workflow is not an all-or-nothing database transaction. No hosted deployment or workflow run has been performed from this development environment.
 
-The Blueprint currently selects free plans where Render offers them for the API and database. Treat this as a demonstration configuration, not production persistence: verify current Render pricing, free-resource limits, and PostgreSQL retention before provisioning. Free Render Postgres databases expire after 30 days, and free web services have an ephemeral filesystem, so do not use them for data that must be retained. Workflow task compute is billed separately on the default Flex plan, based on actual CPU and RAM use (currently $0.20 per CPU-hour and $0.05 per GB-hour, up to $0.40/hour at the 1 CPU/4 GB limit); retained task state is $0.25/GB for 30 days. A nine-stage run launches multiple task runs, so its cost depends on each task's runtime/resource use and returned state. Check the [current Workflows pricing and limits](https://render.com/docs/workflows-limits) and confirm the advertised $50 credit is active and applies to Workflow charges before triggering runs. Choose persistent resources only after authorizing their cost.
+Render bills Workflow task runs by compute time and retained state. As of this documentation check, the default Flex plan is billed at $0.20 per CPU-hour and $0.05 per GB-hour, and task state retention costs $0.25 per GB for 30 days. A nine-stage run launches multiple task runs, so total cost depends on runtime, resources, and result sizes. Check the [current Workflows pricing and limits](https://render.com/docs/workflows-limits) before enabling it. This repository has not created a hosted service or run.
 
 ## Method and limitations
 
