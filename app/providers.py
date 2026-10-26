@@ -225,7 +225,13 @@ class MCXFileProvider(MCXCSVProvider):
 
 class DemoDataProvider:
     name = "synthetic-demo"
-    symbols = ("DEMO_GOLD_1G", "DEMO_GOLD_10G", "DEMO_GOLD_1KG")
+    contracts = (
+        ("DEMO_GOLD_100G", 100.0, "100g", "synthetic ₹ per 100 grams"),
+        ("DEMO_GOLD_10G", 10.0, "10g", "synthetic ₹ per 10 grams"),
+        ("DEMO_GOLD_8G", 8.0, "8g", "synthetic ₹ per 8 grams"),
+        ("DEMO_GOLD_1G", 1.0, "1g", "synthetic ₹ per gram"),
+    )
+    symbols = tuple(contract[0] for contract in contracts)
 
     def records(self, days: int = 60, end_date: date | None = None) -> list[dict[str, Any]]:
         if days < 1 or days > 1000:
@@ -234,12 +240,12 @@ class DemoDataProvider:
         rows: list[dict[str, Any]] = []
         for day_offset in range(days):
             observed_date = final_date - timedelta(days=days - day_offset - 1)
-            for idx, symbol in enumerate(self.symbols):
+            for idx, (symbol, quantity, _, _) in enumerate(self.contracts):
                 synthetic_per_gram = 7000 + day_offset * 1.5 + (day_offset % 7) * 2.0
                 synthetic_per_gram *= 1 + ((day_offset * (idx + 1) % 5) - 2) * 0.0008
-                if day_offset == days - 1 and idx == 2:
+                if day_offset == days - 1 and symbol == "DEMO_GOLD_100G":
                     synthetic_per_gram *= 1.04
-                quote = synthetic_per_gram * (1 if idx == 0 else 10 if idx == 1 else 1000)
+                quote = synthetic_per_gram * quantity
                 rows.append(
                     {
                         "symbol": symbol,

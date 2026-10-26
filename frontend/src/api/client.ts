@@ -215,7 +215,7 @@ export function createClient({
           symbol: text(row.symbol) ?? 'Unknown',
           expiry: text(row.expiry_date),
           quantity: num(row.contract_quantity),
-          quantity_unit: text(row.quotation_unit),
+          quantity_unit: row.verification_status === 'demo-only' ? 'grams' : text(row.quotation_unit),
           quotation_basis: text(row.quotation_basis),
           purity: num(row.purity),
           delivery_location: text(row.delivery_location),
@@ -241,7 +241,7 @@ export function createClient({
     consensus: async (date?: string): Promise<T.ConsensusResponse> => {
       const [summary, history] = await Promise.all([request('/api/v1/market/summary'), loadHistory()]);
       const row = selectedSummary(summary, dataMode);
-      const contracts = records(row?.contracts);
+      const contracts = row ? records(row.contracts) : [];
       const latestBySymbol = new Map(history.series.map((series) => [
         series.symbol,
         series.points.find((point) => point.date === text(row?.data_date))?.normalized_price ?? null,

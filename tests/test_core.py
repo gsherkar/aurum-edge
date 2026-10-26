@@ -68,6 +68,7 @@ def test_csv_provider_rejects_missing_price_and_needs_date():
 def test_normalization_requires_explicit_quote_unit_and_conversion():
     spec = {"quotation_unit": "10g", "conversion_factor": 1.0}
     assert normalize_price(spec, 7500.0) == 750.0
+    assert normalize_price({"quotation_unit": "8g", "conversion_factor": 1.0}, 6000.0) == 750.0
     try:
         normalize_price({"quotation_unit": "contract", "conversion_factor": 1.0}, 7500.0)
     except ValueError as exc:
@@ -145,8 +146,23 @@ def test_risk_guards_explain_missing_liquidity_expiry_and_staleness():
 
 def test_demo_provider_only_uses_explicit_synthetic_symbols():
     records = DemoDataProvider().records(days=2, end_date=date(2026, 10, 20))
-    assert len(records) == 6
+    assert len(records) == 8
     assert {row["symbol"] for row in records} == set(DemoDataProvider.symbols)
+    specs = {
+        symbol: {"contract_quantity": quantity, "quotation_unit": unit, "conversion_factor": 1.0}
+        for symbol, quantity, unit, _ in DemoDataProvider.contracts
+    }
+    assert specs == {
+        "DEMO_GOLD_100G": {"contract_quantity": 100.0, "quotation_unit": "100g", "conversion_factor": 1.0},
+        "DEMO_GOLD_10G": {"contract_quantity": 10.0, "quotation_unit": "10g", "conversion_factor": 1.0},
+        "DEMO_GOLD_8G": {"contract_quantity": 8.0, "quotation_unit": "8g", "conversion_factor": 1.0},
+        "DEMO_GOLD_1G": {"contract_quantity": 1.0, "quotation_unit": "1g", "conversion_factor": 1.0},
+    }
+    for row in records:
+        spec = specs[row["symbol"]]
+        assert normalize_price(spec, row["close"]) == pytest.approx(
+            row["close"] / spec["contract_quantity"]
+        )
 
 
 def test_render_workflow_registers_all_pipeline_stages():
@@ -321,7 +337,17 @@ def test_api_imports_historical_file_and_keeps_demo_separate(monkeypatch):
         demo_response = client.post("/api/v1/data/demo")
         assert demo_response.status_code == 200
         assert demo_response.json()["data_mode"] == "synthetic"
-        assert demo_response.json()["summary"]["normalized_records"] == 180
+        assert demo_response.json()["summary"]["normalized_records"] == 240
+        demo_contracts = client.get("/api/v1/contracts?data_mode=synthetic").json()
+        assert {
+            contract["symbol"]: (contract["contract_quantity"], contract["quotation_unit"], contract["verification_status"])
+            for contract in demo_contracts
+        } == {
+            "DEMO_GOLD_100G": (100.0, "100g", "demo-only"),
+            "DEMO_GOLD_10G": (10.0, "10g", "demo-only"),
+            "DEMO_GOLD_8G": (8.0, "8g", "demo-only"),
+            "DEMO_GOLD_1G": (1.0, "1g", "demo-only"),
+        }
         data_modes = {item["data_mode"] for item in client.get("/api/v1/market/summary").json()["data_sets"]}
         assert data_modes == {"historical_file", "synthetic"}
         demo_alerts = client.get("/api/v1/alerts?data_mode=synthetic").json()

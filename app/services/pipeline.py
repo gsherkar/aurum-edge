@@ -51,12 +51,7 @@ def ingest_market_data(import_id: str) -> dict[str, Any]:
     with SessionLocal() as db:
         batch = _get_batch(db, import_id)
         if batch.data_mode == "synthetic":
-            demo_specs = (
-                ("DEMO_GOLD_1G", 1.0, "1g", "synthetic ₹ per gram"),
-                ("DEMO_GOLD_10G", 10.0, "10g", "synthetic ₹ per 10 grams"),
-                ("DEMO_GOLD_1KG", 1000.0, "1kg", "synthetic ₹ per kilogram"),
-            )
-            for symbol, quantity, unit, basis in demo_specs:
+            for symbol, quantity, unit, basis in DemoDataProvider.contracts:
                 exists = (
                     db.query(ContractSpec)
                     .filter_by(symbol=symbol, data_mode="synthetic", effective_start=date(2000, 1, 1))

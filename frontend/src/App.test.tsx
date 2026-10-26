@@ -82,7 +82,7 @@ describe('dashboard interactions against backend contract', () => {
     expect(await screen.findByText('STATIC SAMPLE PREVIEW')).toBeInTheDocument();
     expect(screen.getByText('Sample preview')).toBeInTheDocument();
     expect((await screen.findAllByText('Static frontend sample (not market data)')).length).toBeGreaterThan(0);
-    expect(await screen.findByRole('button', { name: 'Explain alert for GOLDM' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Explain alert for DEMO_GOLD_100G' })).toBeInTheDocument();
     expect(screen.getByText(/File upload and dataset creation require the backend/)).toBeInTheDocument();
     expect(screen.getByText('No backend imports are available in sample preview.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Submit workflow' })).not.toBeInTheDocument();
@@ -92,10 +92,10 @@ describe('dashboard interactions against backend contract', () => {
 
   it('opens alert details accessibly and restores focus on Escape', async () => {
     render(<App />);
-    const explain = await screen.findByRole('button', { name: 'Explain alert for GOLDM' });
+    const explain = await screen.findByRole('button', { name: 'Explain alert for DEMO_GOLD_100G' });
     explain.focus();
     fireEvent.click(explain);
-    expect(await screen.findByRole('dialog', { name: 'Alert details for GOLDM' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'Alert details for DEMO_GOLD_100G' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
     fireEvent.keyDown(window, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
@@ -155,14 +155,22 @@ describe('dashboard interactions against backend contract', () => {
     render(<App />);
     const contracts = screen.getByRole('region', { name: 'Contract details' });
     const search = await within(contracts).findByLabelText('Search contracts');
-    expect(within(contracts).getByText('GOLDM')).toBeInTheDocument();
-    fireEvent.change(search, { target: { value: 'GOLDPETAL' } });
-    expect(within(contracts).getByText('GOLDPETAL')).toBeInTheDocument();
-    expect(within(contracts).queryByText('GOLDM')).not.toBeInTheDocument();
+    for (const [symbol, quantity] of [
+      ['DEMO_GOLD_100G', '100 grams'],
+      ['DEMO_GOLD_10G', '10 grams'],
+      ['DEMO_GOLD_8G', '8 grams'],
+      ['DEMO_GOLD_1G', '1 grams'],
+    ]) {
+      expect(within(contracts).getByText(symbol)).toBeInTheDocument();
+      expect(within(contracts).getByText(quantity)).toBeInTheDocument();
+    }
+    fireEvent.change(search, { target: { value: 'DEMO_GOLD_8G' } });
+    expect(within(contracts).getByText('DEMO_GOLD_8G')).toBeInTheDocument();
+    expect(within(contracts).queryByText('DEMO_GOLD_100G')).not.toBeInTheDocument();
     fireEvent.change(search, { target: { value: 'no-match' } });
     expect(within(contracts).getByText(/No contracts match/)).toBeInTheDocument();
     fireEvent.change(search, { target: { value: '' } });
-    expect(within(contracts).getByText('GOLDM')).toBeInTheDocument();
+    expect(within(contracts).getByText('DEMO_GOLD_100G')).toBeInTheDocument();
   });
 
   it('keeps every navigation link mapped to a real section and updates the active location', async () => {

@@ -108,6 +108,44 @@ describe('backend API adapter', () => {
     });
   });
 
+  it('shows synthetic contract quantities in grams without treating specifications as official', async () => {
+    const { fetchImpl } = mockBackend();
+    fetchImpl.mockImplementation(async (input) => {
+      const url = new URL(String(input), 'http://localhost');
+      if (url.pathname === '/api/v1/contracts') return json([
+        { symbol: 'DEMO_GOLD_100G', contract_quantity: 100, quotation_unit: '100g', verification_status: 'demo-only' },
+        { symbol: 'DEMO_GOLD_10G', contract_quantity: 10, quotation_unit: '10g', verification_status: 'demo-only' },
+        { symbol: 'DEMO_GOLD_8G', contract_quantity: 8, quotation_unit: '8g', verification_status: 'demo-only' },
+        { symbol: 'DEMO_GOLD_1G', contract_quantity: 1, quotation_unit: '1g', verification_status: 'demo-only' },
+      ]);
+      return json([]);
+    });
+
+    const result = await createClient({ fetchImpl: fetchImpl as typeof fetch, dataMode: 'synthetic' }).contracts();
+    expect(result.contracts.map(({ symbol, quantity, quantity_unit, spec_status }) =>
+      [symbol, quantity, quantity_unit, spec_status])).toEqual([
+      ['DEMO_GOLD_100G', 100, 'grams', 'demo-only'],
+      ['DEMO_GOLD_10G', 10, 'grams', 'demo-only'],
+      ['DEMO_GOLD_8G', 8, 'grams', 'demo-only'],
+      ['DEMO_GOLD_1G', 1, 'grams', 'demo-only'],
+    ]);
+  });
+
+  it('returns an empty consensus when the selected dataset has no observations', async () => {
+    const { client, fetchImpl } = mockBackend();
+    fetchImpl.mockImplementation(async (input) => {
+      const url = new URL(String(input), 'http://localhost');
+      return url.pathname === '/api/v1/market/summary' ? json({ data_sets: [] }) : json([]);
+    });
+
+    await expect(client.consensus()).resolves.toMatchObject({
+      data_mode: 'unknown',
+      consensus_price: null,
+      contracts: [],
+      history: [],
+    });
+  });
+
   it('maps backend alert guards and keeps unsupported cost estimates unavailable', async () => {
     const { client } = mockBackend();
     expect(await client.signals()).toMatchObject({

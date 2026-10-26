@@ -46,6 +46,12 @@ Try the separately labelled synthetic fixture:
 curl.exe -X POST "http://127.0.0.1:8000/api/v1/data/demo"
 ```
 
+The synthetic fixture contains four illustrative demo contracts:
+`DEMO_GOLD_100G` (100 grams), `DEMO_GOLD_10G` (10 grams),
+`DEMO_GOLD_8G` (8 grams), and `DEMO_GOLD_1G` (1 gram). Their generated
+specifications are marked `demo-only`; they are not verified official MCX
+contracts or live market data.
+
 Test the backend:
 
 ```powershell

@@ -6,38 +6,44 @@ const SAMPLE_DATES = [
 ];
 
 const SAMPLE_CONTRACTS = [
-  { symbol: 'GOLDM', expiry_date: '2025-02-05', contract_quantity: 100, quotation_unit: 'grams', quotation_basis: 'illustrative only', purity: null, delivery_location: null, verification_status: 'demo-only' },
-  { symbol: 'GOLD', expiry_date: '2025-04-04', contract_quantity: 1000, quotation_unit: 'grams', quotation_basis: 'illustrative only', purity: null, delivery_location: null, verification_status: 'demo-only' },
-  { symbol: 'GOLDPETAL', expiry_date: '2025-03-28', contract_quantity: 1, quotation_unit: 'gram', quotation_basis: 'illustrative only', purity: null, delivery_location: null, verification_status: 'demo-only' },
+  { symbol: 'DEMO_GOLD_100G', expiry_date: '2025-02-05', contract_quantity: 100, quotation_unit: '100g', quotation_basis: 'synthetic ₹ per 100 grams', purity: 1, delivery_location: null, verification_status: 'demo-only' },
+  { symbol: 'DEMO_GOLD_10G', expiry_date: '2025-04-04', contract_quantity: 10, quotation_unit: '10g', quotation_basis: 'synthetic ₹ per 10 grams', purity: 1, delivery_location: null, verification_status: 'demo-only' },
+  { symbol: 'DEMO_GOLD_8G', expiry_date: '2025-03-28', contract_quantity: 8, quotation_unit: '8g', quotation_basis: 'synthetic ₹ per 8 grams', purity: 1, delivery_location: null, verification_status: 'demo-only' },
+  { symbol: 'DEMO_GOLD_1G', expiry_date: '2025-03-14', contract_quantity: 1, quotation_unit: '1g', quotation_basis: 'synthetic ₹ per gram', purity: 1, delivery_location: null, verification_status: 'demo-only' },
 ];
 
 const PRICE_SERIES = [
-  { symbol: 'GOLDM', prices: [7002, 7010, 6996, 7024, 7031, 7018, 7042, 7050, 7037, 7061] },
-  { symbol: 'GOLD', prices: [7005, 7013, 6999, 7027, 7034, 7021, 7045, 7053, 7040, 7064] },
-  { symbol: 'GOLDPETAL', prices: [6998, 7006, 6992, 7020, 7027, 7014, 7038, 7046, 7033, 7057] },
+  { symbol: 'DEMO_GOLD_100G', prices: [7002, 7010, 6996, 7024, 7031, 7018, 7042, 7050, 7037, 7061] },
+  { symbol: 'DEMO_GOLD_10G', prices: [7005, 7013, 6999, 7027, 7034, 7021, 7045, 7053, 7040, 7064] },
+  { symbol: 'DEMO_GOLD_8G', prices: [7000, 7008, 6994, 7022, 7029, 7016, 7040, 7048, 7035, 7059] },
+  { symbol: 'DEMO_GOLD_1G', prices: [6998, 7006, 6992, 7020, 7027, 7014, 7038, 7046, 7033, 7057] },
 ];
 
 const SAMPLE_OBSERVATIONS = PRICE_SERIES.flatMap(({ symbol, prices }) =>
-  prices.map((normalizedPrice, index) => ({
-    id: `${symbol}-${SAMPLE_DATES[index]}`,
-    symbol,
-    expiry_date: SAMPLE_CONTRACTS.find((contract) => contract.symbol === symbol)?.expiry_date ?? null,
-    source_name: 'Static frontend sample',
-    source_timestamp: null,
-    fetched_at: `${SAMPLE_DATES[index]}T12:00:00Z`,
-    data_date: SAMPLE_DATES[index],
-    data_mode: 'synthetic' satisfies BackendDataMode,
-    import_id: 'frontend-sample-only',
-    open: normalizedPrice * 10 - 4,
-    high: normalizedPrice * 10 + 9,
-    low: normalizedPrice * 10 - 11,
-    close: normalizedPrice * 10,
-    settlement: null,
-    volume: 120 + index * 3,
-    traded_value: null,
-    open_interest: null,
-    normalized_close: normalizedPrice,
-  })),
+  prices.map((normalizedPrice, index) => {
+    const quantity = SAMPLE_CONTRACTS.find((contract) => contract.symbol === symbol)?.contract_quantity ?? 1;
+    const rawPrice = normalizedPrice * quantity;
+    return {
+      id: `${symbol}-${SAMPLE_DATES[index]}`,
+      symbol,
+      expiry_date: SAMPLE_CONTRACTS.find((contract) => contract.symbol === symbol)?.expiry_date ?? null,
+      source_name: 'Static frontend sample',
+      source_timestamp: null,
+      fetched_at: `${SAMPLE_DATES[index]}T12:00:00Z`,
+      data_date: SAMPLE_DATES[index],
+      data_mode: 'synthetic' satisfies BackendDataMode,
+      import_id: 'frontend-sample-only',
+      open: rawPrice - 4 * quantity / 10,
+      high: rawPrice + 9 * quantity / 10,
+      low: rawPrice - 11 * quantity / 10,
+      close: rawPrice,
+      settlement: null,
+      volume: 120 + index * 3,
+      traded_value: null,
+      open_interest: null,
+      normalized_close: normalizedPrice,
+    };
+  }),
 );
 
 const latestPrices = PRICE_SERIES.map(({ symbol, prices }) => ({
@@ -73,7 +79,7 @@ const SAMPLE_ALERTS = [{
   id: 1,
   import_id: 'frontend-sample-only',
   data_mode: 'synthetic',
-  symbol: 'GOLDM',
+  symbol: 'DEMO_GOLD_100G',
   expiry_date: '2025-02-05',
   data_date: SAMPLE_DATES[SAMPLE_DATES.length - 1],
   consensus_price_per_gram: consensus,
